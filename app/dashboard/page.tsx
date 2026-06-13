@@ -13,7 +13,9 @@ import {
   Upload,
   LogOut,
   X,
-  Loader
+  Loader,
+  Flame,
+  Trophy
 } from 'lucide-react';
 
 const MAX_FILE_SIZE_MB = 10;
@@ -133,9 +135,6 @@ export default function DashboardPage() {
         return;
       }
 
-      // Debug: confirm exact response shape — remove after AI is stable
-      console.log('API response:', data);
-
       // HTTP-level errors (400, 422, 429, 500) — all return ErrorResponse shape
       if (!response.ok) {
         // Safely extract error message — data.ok is false for all backend errors
@@ -176,7 +175,6 @@ export default function DashboardPage() {
           setStatus('idle');
           return;
         }
-        sessionStorage.setItem('resume_uploaded', 'true');
         sessionStorage.setItem('analysis_result', JSON.stringify(data.analysis));
         sessionStorage.setItem('analysis_truncated', data.truncated ? 'true' : 'false');
         router.push('/results');
@@ -274,9 +272,9 @@ export default function DashboardPage() {
       <main className="flex-1 overflow-auto">
         <div className="max-w-4xl mx-auto px-4 md:px-8 py-8 md:py-12">
           <div className="mb-6 md:mb-8">
-            <h1 className="text-2xl md:text-4xl font-bold mb-2">Upload Your Resume</h1>
+            <h1 className="text-2xl md:text-4xl font-bold mb-2">Drop Your Resume.<br /><span className="gradient-text">Get Roasted.</span></h1>
             <p className="text-slate-400 text-base md:text-lg">
-              Get instant AI-powered feedback and discover your best internship matches
+              Tier S to F &nbsp;·&nbsp; Brutal AI roast &nbsp;·&nbsp; Shareable card. Free.
             </p>
           </div>
 
@@ -308,9 +306,9 @@ export default function DashboardPage() {
                   <Upload className="w-7 h-7 md:w-8 md:h-8 text-purple-400" />
                 </div>
                 <h3 className="text-base md:text-xl font-semibold mb-2 text-center">
-                  Tap to browse or drop your resume
+                  Drop your resume and find out the truth
                 </h3>
-                <p className="text-slate-400 text-sm">PDF format only • Max 10MB</p>
+                <p className="text-slate-400 text-sm">PDF only &nbsp;·&nbsp; Max 10MB &nbsp;·&nbsp; IT industry</p>
               </label>
             ) : (
               <div className="flex items-center justify-between bg-slate-800/50 rounded-lg p-4 border border-slate-700">
@@ -358,7 +356,8 @@ export default function DashboardPage() {
               onClick={() => startAnalysis(uploadedFile)}
               className="w-full mt-6 py-4 rounded-lg gradient-purple text-white font-semibold text-lg hover:opacity-90 transition-opacity shadow-lg shadow-purple-500/30 flex items-center justify-center gap-3"
             >
-              Analyze My Resume
+              <Flame className="w-5 h-5" />
+              Roast My Resume
             </button>
           )}
 
@@ -368,7 +367,7 @@ export default function DashboardPage() {
               className="w-full mt-6 py-4 rounded-lg gradient-purple text-white font-semibold text-lg opacity-60 cursor-not-allowed flex items-center justify-center gap-3"
             >
               <Loader className="w-5 h-5 animate-spin" />
-              Analyzing your resume...
+              Roasting your resume...
             </button>
           )}
 
@@ -383,28 +382,28 @@ export default function DashboardPage() {
 
           {status === 'analyzing' && (
             <p className="text-center text-slate-400 text-sm mt-3">
-              Extracting text and running AI analysis — usually done in under 10 seconds
+              Running the roast — brutal honesty incoming. Usually under 10 seconds.
             </p>
           )}
 
           <div className="mt-8 md:mt-12 grid md:grid-cols-2 gap-4 md:gap-6">
             <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 md:p-6">
               <div className="w-12 h-12 rounded-lg bg-purple-500/10 border border-purple-500/20 flex items-center justify-center mb-4">
-                <Target className="w-6 h-6 text-purple-400" />
+                <Trophy className="w-6 h-6 text-yellow-400" />
               </div>
-              <h3 className="text-lg font-semibold mb-2">Instant Analysis</h3>
+              <h3 className="text-lg font-semibold mb-2">Tier S — F</h3>
               <p className="text-slate-400 text-sm">
-                Get your resume score and detailed feedback in seconds
+                You get a grade. S is elite. F means rebuild. No participation trophies.
               </p>
             </div>
 
             <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 md:p-6">
               <div className="w-12 h-12 rounded-lg bg-purple-500/10 border border-purple-500/20 flex items-center justify-center mb-4">
-                <Sparkles className="w-6 h-6 text-purple-400" />
+                <Flame className="w-6 h-6 text-orange-400" />
               </div>
-              <h3 className="text-lg font-semibold mb-2">Smart Matching</h3>
+              <h3 className="text-lg font-semibold mb-2">Share the Burn</h3>
               <p className="text-slate-400 text-sm">
-                Discover internships where you have the highest chances
+                Get a shareable card for Reels. Post your tier. Let them judge.
               </p>
             </div>
           </div>

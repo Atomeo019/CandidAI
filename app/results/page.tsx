@@ -25,7 +25,7 @@ import {
   Send,
   FileText,
 } from 'lucide-react';
-import type { AnalysisResult, RedFlag, HiringPrediction } from '@/lib/types';
+import type { AnalysisResult, RedFlag, HiringPrediction, ResumeTier } from '@/lib/types';
 import { normalizeAnalysisResult } from '@/lib/normalize';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -78,6 +78,18 @@ function getRedFlagColor(severity: RedFlag['severity']) {
   }
 }
 
+
+function getTierStyle(tier: ResumeTier) {
+  switch (tier) {
+    case 'S': return { label: 'S', bg: 'bg-yellow-400',   text: 'text-yellow-900', ring: 'ring-yellow-400/60', card: 'from-yellow-900/30 to-yellow-800/20 border-yellow-500/40', accent: 'text-yellow-300', tagBg: 'bg-yellow-400/10 border-yellow-400/30' };
+    case 'A': return { label: 'A', bg: 'bg-green-400',    text: 'text-green-900',  ring: 'ring-green-400/60',  card: 'from-green-900/30 to-green-800/20 border-green-500/40',   accent: 'text-green-300',  tagBg: 'bg-green-400/10 border-green-400/30'  };
+    case 'B': return { label: 'B', bg: 'bg-blue-400',     text: 'text-blue-900',   ring: 'ring-blue-400/60',   card: 'from-blue-900/30 to-blue-800/20 border-blue-500/40',      accent: 'text-blue-300',   tagBg: 'bg-blue-400/10 border-blue-400/30'    };
+    case 'C': return { label: 'C', bg: 'bg-orange-400',   text: 'text-orange-900', ring: 'ring-orange-400/60', card: 'from-orange-900/30 to-orange-800/20 border-orange-500/40', accent: 'text-orange-300', tagBg: 'bg-orange-400/10 border-orange-400/30' };
+    case 'D': return { label: 'D', bg: 'bg-red-500',      text: 'text-red-950',    ring: 'ring-red-500/60',    card: 'from-red-950/40 to-red-900/20 border-red-500/40',          accent: 'text-red-300',    tagBg: 'bg-red-500/10 border-red-500/30'      };
+    case 'F': return { label: 'F', bg: 'bg-slate-600',    text: 'text-slate-100',  ring: 'ring-slate-500/60',  card: 'from-slate-800/60 to-slate-900/40 border-slate-600/40',    accent: 'text-slate-300',  tagBg: 'bg-slate-600/20 border-slate-600/40'  };
+  }
+}
+
 function ScoreBar({ label, score, color }: { label: string; score: number; color: string }) {
   return (
     <div>
@@ -118,6 +130,7 @@ export default function ResultsPage() {
   const [progress, setProgress]           = useState(0);
   const [sessionError, setSessionError]   = useState(false);
   const [isTruncated, setIsTruncated]     = useState(false);
+  const [showShareCard, setShowShareCard]   = useState(false);
 
   // Apply Engine state
   const [jdText, setJdText]               = useState('');
@@ -233,6 +246,7 @@ export default function ResultsPage() {
 
   // All fields are safe after normalization.
   const profileColors  = getProfileColors(analysis.profile_strength);
+  const tierStyle      = getTierStyle(analysis.tier);
   const outcomeStyle   = getOutcomeStyle(analysis.hiring_prediction.outcome);
   const criticalFlags  = analysis.red_flags.filter((f) => f.severity === 'Critical');
   const otherFlags     = analysis.red_flags.filter((f) => f.severity !== 'Critical');
@@ -269,6 +283,31 @@ export default function ResultsPage() {
             {analysis.role_confidence < 60 && (
               <span className="text-yellow-400 text-sm ml-2">(role detected with low confidence — advice may need adjustment)</span>
             )}
+          </p>
+        </div>
+
+
+        {/* ── ROAST — the hook. Shown immediately after role detection. ── */}
+        <div className={`rounded-2xl border-2 bg-gradient-to-br p-6 md:p-8 ${tierStyle.card}`}>
+          <div className="flex items-start gap-4 mb-4">
+            <div className={`inline-flex items-center gap-2 px-3 py-1 rounded-full border text-xs font-bold uppercase tracking-widest ${tierStyle.tagBg} ${tierStyle.accent}`}>
+              <span>TIER {analysis.tier}</span>
+              <span aria-hidden>·</span>
+              <span>{analysis.detected_role}</span>
+            </div>
+            <button
+              onClick={() => setShowShareCard(true)}
+              className="ml-auto flex items-center gap-2 px-4 py-1.5 rounded-full bg-white/5 border border-white/10 text-xs text-slate-300 hover:bg-white/10 transition-colors"
+            >
+              <Send className="w-3.5 h-3.5" />
+              Share Roast
+            </button>
+          </div>
+          <p className={`text-xl md:text-3xl font-black leading-snug mb-4 ${tierStyle.accent}`}>
+            &ldquo;{analysis.roast_headline}&rdquo;
+          </p>
+          <p className="text-slate-300 text-sm md:text-base leading-relaxed">
+            {analysis.roast_body}
           </p>
         </div>
 
@@ -392,9 +431,11 @@ export default function ResultsPage() {
                   </div>
                 </div>
 
-                <div className={`inline-flex items-center gap-2 px-4 py-2 rounded-full ${profileColors.bg} border ${profileColors.border}`}>
-                  <CheckCircle className={`w-4 h-4 ${profileColors.text}`} />
-                  <span className={`text-sm font-semibold ${profileColors.text}`}>{analysis.profile_strength} Profile</span>
+                <div className="flex flex-col items-center gap-2">
+                  <div className={`w-20 h-20 md:w-24 md:h-24 rounded-2xl ${tierStyle.bg} flex items-center justify-center ring-4 ${tierStyle.ring} shadow-lg`}>
+                    <span className={`text-4xl md:text-5xl font-black ${tierStyle.text}`}>{analysis.tier}</span>
+                  </div>
+                  <span className="text-xs text-slate-400 uppercase tracking-widest font-semibold">Resume Tier</span>
                 </div>
               </div>
 
@@ -633,13 +674,13 @@ export default function ResultsPage() {
                     <div className="w-10 h-10 rounded-full bg-purple-500/20 border border-purple-500/30 flex items-center justify-center mb-3">
                       <Lock className="w-5 h-5 text-purple-400" />
                     </div>
-                    <p className="text-white font-semibold text-center mb-1">Full cover letter + email + LinkedIn DM</p>
-                    <p className="text-slate-400 text-sm text-center mb-4">3 tailored documents, generated in seconds.</p>
+                    <p className="text-white font-semibold text-center mb-1">Get your full tailored cover letter</p>
+                    <p className="text-slate-400 text-sm text-center mb-4">3 complete paragraphs, personalized to this job description.</p>
                     <button
                       disabled
                       className="px-5 py-2.5 rounded-lg bg-purple-600/50 text-white text-sm font-semibold cursor-not-allowed opacity-70 border border-purple-500/30"
                     >
-                      Unlock Full Version — Coming Soon
+                      Unlock Full Cover Letter — Coming Soon
                     </button>
                     <p className="text-slate-500 text-xs mt-2">Free during beta</p>
                   </div>
@@ -792,6 +833,96 @@ export default function ResultsPage() {
                   <p className="text-slate-300 text-sm">{strength}</p>
                 </div>
               ))}
+            </div>
+          </div>
+        )}
+
+
+        {/* ── SHARE CARD OVERLAY — 9:16, screenshot-ready ── */}
+        {showShareCard && (
+          <div
+            className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+            onClick={() => setShowShareCard(false)}
+          >
+            <div className="flex flex-col items-center gap-4" onClick={(e) => e.stopPropagation()}>
+              {/* The card itself — 9:16 at 360×640, scale down on small screens */}
+              <div
+                id="share-card"
+                className="relative overflow-hidden rounded-2xl shadow-2xl"
+                style={{ width: 360, height: 640, background: '#0a0a0f' }}
+              >
+                {/* Background accent */}
+                <div
+                  className="absolute inset-0 opacity-20"
+                  style={{ background: 'radial-gradient(ellipse at 50% 0%, #7c3aed 0%, transparent 70%)' }}
+                />
+
+                {/* Top branding */}
+                <div className="absolute top-6 left-6 right-6 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="w-5 h-5 text-purple-400" />
+                    <span className="text-sm font-bold text-purple-300 tracking-wide">ResumeRoast</span>
+                  </div>
+                  <span className="text-xs text-slate-500 uppercase tracking-widest">{analysis.detected_role}</span>
+                </div>
+
+                {/* Tier badge — centre */}
+                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-[70%] flex flex-col items-center gap-3">
+                  <div className={`w-32 h-32 rounded-3xl ${tierStyle.bg} flex items-center justify-center ring-8 ${tierStyle.ring} shadow-2xl`}>
+                    <span className={`text-7xl font-black ${tierStyle.text}`}>{analysis.tier}</span>
+                  </div>
+                  <span className="text-slate-400 text-xs uppercase tracking-widest font-semibold">Resume Tier</span>
+                </div>
+
+                {/* Roast headline */}
+                <div className="absolute left-6 right-6" style={{ bottom: 200 }}>
+                  <p className={`text-lg font-black leading-snug text-center ${tierStyle.accent}`}>
+                    &ldquo;{analysis.roast_headline}&rdquo;
+                  </p>
+                </div>
+
+                {/* Score + outcome pill */}
+                <div className="absolute bottom-20 left-6 right-6 flex items-center justify-between">
+                  <div className="text-center">
+                    <p className="text-4xl font-black text-white">{analysis.final_score}</p>
+                    <p className="text-xs text-slate-500 uppercase tracking-widest">Score</p>
+                  </div>
+                  <div className={`px-4 py-2 rounded-full ${outcomeStyle.badge} font-bold text-sm`}>
+                    {analysis.hiring_prediction.outcome}
+                  </div>
+                  <div className="text-center">
+                    <p className="text-4xl font-black text-white">{analysis.hiring_prediction.screen_pass_rate}%</p>
+                    <p className="text-xs text-slate-500 uppercase tracking-widest">ATS Pass</p>
+                  </div>
+                </div>
+
+                {/* Bottom CTA */}
+                <div className="absolute bottom-6 left-6 right-6 text-center">
+                  <p className="text-slate-500 text-xs">Get your resume roasted at</p>
+                  <p className="text-slate-300 text-sm font-bold">resumeroast.app</p>
+                </div>
+              </div>
+
+              {/* Action buttons under card */}
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setShowShareCard(false)}
+                  className="px-5 py-2.5 rounded-lg border border-slate-700 text-slate-300 text-sm hover:bg-slate-800 transition-colors"
+                >
+                  Close
+                </button>
+                <button
+                  onClick={() => {
+                    const el = document.getElementById('share-card');
+                    if (el) el.style.outline = '2px solid transparent';
+                    alert('Screenshot the card above and post it. Video screen-recording works great for Reels!');
+                  }}
+                  className="px-5 py-2.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-sm font-semibold transition-colors"
+                >
+                  Screenshot &amp; Share
+                </button>
+              </div>
+              <p className="text-slate-600 text-xs">Tip: use your phone&rsquo;s screenshot for best quality</p>
             </div>
           </div>
         )}

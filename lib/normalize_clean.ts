@@ -16,10 +16,10 @@ import type { AnalysisResult, RedFlag, DimensionScores, HiringPrediction, Resume
 
 export function deriveTier(score: number): ResumeTier {
   if (score >= 90) return 'S';
-  if (score >= 78) return 'A';  // raised: A requires demonstrated strength
-  if (score >= 65) return 'B';  // raised: 60-64 is Tier C, not B
-  if (score >= 50) return 'C';  // raised: C requires more than bare minimum
-  if (score >= 35) return 'D';
+  if (score >= 75) return 'A';
+  if (score >= 60) return 'B';
+  if (score >= 45) return 'C';
+  if (score >= 30) return 'D';
   return 'F';
 }
 
@@ -243,12 +243,6 @@ function applyScoreCaps(
     fs = Math.min(fs, 50);
   }
 
-  // Multiple Medium flags compound — they pile up in real screening too.
-  // 2 Medium = can't ignore. 3+ Medium = pattern of problems, not isolated issues.
-  const mediumCount = redFlags.filter((f) => f.severity === 'Medium').length;
-  if (mediumCount >= 2) fs = Math.min(fs, 65);
-  if (mediumCount >= 3) fs = Math.min(fs, 58);
-
   return { finalScore: fs, contentScore: cs };
 }
 
@@ -295,8 +289,8 @@ function capProfileToOutcome(
 function deriveHiringOutcome(finalScore: number, redFlags: RedFlag[]): HiringPrediction['outcome'] {
   const hasCritical = redFlags.some((f) => f.severity === 'Critical');
   if (finalScore >= 78 && !hasCritical) return 'Strong';
-  if (finalScore >= 63 && !hasCritical) return 'Possible';  // raised: 60-62 is Unlikely, not Possible
-  if (finalScore >= 45)                  return 'Unlikely';  // raised: below 45 = No
+  if (finalScore >= 60 && !hasCritical) return 'Possible';
+  if (finalScore >= 42)                  return 'Unlikely';
   return 'No';
 }
 
@@ -304,16 +298,12 @@ function deriveCompetitiveTier(
   finalScore: number,
   redFlags: RedFlag[],
   aiTier: HiringPrediction['competitive_tier'],
-  finalOutcome: HiringPrediction['outcome'],
 ): HiringPrediction['competitive_tier'] {
   const hasCritical = redFlags.some((f) => f.severity === 'Critical');
   if (finalScore < 42) return 'Not-Ready';
   if (finalScore < 55) return 'Startup-Only';
-  if (aiTier === 'FAANG' && hasCritical) return 'Mid-Market';
   if (hasCritical && finalScore < 65) return 'Mid-Market';
-  // Outcome-tier consistency: 'Unlikely' cannot be FAANG or Top-50.
-  if (finalOutcome === 'No') return 'Not-Ready';
-  if (finalOutcome === 'Unlikely' && (aiTier === 'FAANG' || aiTier === 'Top-50')) return 'Mid-Market';
+  if (aiTier === 'FAANG' && hasCritical) return 'Mid-Market';
   return aiTier;
 }
 
@@ -354,10 +344,7 @@ export function normalizeAnalysisResult(raw: unknown, resumeText = ''): Analysis
   const isCareerPivot = safeBool(r.is_career_pivot, false);
 
   // Signal detector caps
-  // Also check AI red flags as backup — PDF extraction can garble section headers,
-  // causing our regex to miss "Currently Learning" even when the AI detected it.
-  const aiDetectedLearning = redFlags.some((f) => /currently.learning|in.progress|currently.studying/i.test(f.flag));
-  const hasLearningSection = (resumeText ? CURRENTLY_LEARNING_RE.test(resumeText) : false) || aiDetectedLearning;
+  const hasLearningSection = resumeText ? CURRENTLY_LEARNING_RE.test(resumeText) : false;
   const hasWeakTitle       = resumeText ? WEAK_HEADLINE_RE.test(resumeText) : false;
 
   if (hasLearningSection) {
@@ -387,12 +374,8 @@ export function normalizeAnalysisResult(raw: unknown, resumeText = ''): Analysis
 
   // Deployed project with no stated user count / metric — cap project_impact.
   // AI consistently over-scores solo projects that just 'went live' with no data.
-  // Cross-check regex against AI's explicit has_metrics judgment — PDF extraction
-  // can match stray numbers (years, GPA) that aren't real metrics.
-  const HAS_METRICS_RE = /\d+\s*(users?|downloads?|requests?\/?(?:day|month|sec)|ms|%|million|k\s+users|stars|installs)/i;
-  const regexHasMetrics  = resumeText ? HAS_METRICS_RE.test(resumeText) : true;
-  const aiHasMetrics     = safeBool(r.has_metrics, true); // conservative default: assume true if field missing
-  const projectHasMetrics = regexHasMetrics && aiHasMetrics;
+  const HAS_METRICS_RE = /\d+\s*(users?|downloads?|requests?\/?(day|month|sec)|ms|%|million|k\s+users|stars|installs)/i;
+  const projectHasMetrics = resumeText ? HAS_METRICS_RE.test(resumeText) : true;
   if (!projectHasMetrics && dims.project_impact > 45) {
     dims.project_impact = Math.min(dims.project_impact, 45);
   }
@@ -430,25 +413,7 @@ export function normalizeAnalysisResult(raw: unknown, resumeText = ''): Analysis
   const rawFinal = Math.round(rawContent * 0.75 + atsScore * 0.25); // content-heavy: projects/exp matter more than formatting
 
   // ── Anti-inflation caps ──────────────────────────────────────────────────────
-  let { finalScore: _fs, contentScore } = applyScoreCaps(rawFinal, rawContent, dims, redFlags, isCareerPivot);
-
-  // Currently Learning section = advertising your own gaps. Cap at 68.
-  // A score above 68 implies the resume is near-hireable; a gap list contradicts that.
-  if (hasLearningSection) _fs = Math.min(_fs, 68);
-
-  // No project metrics = all claims unverifiable. Cap at 62.
-  // A score above 62 implies demonstrated impact; no numbers means no proof.
-  if (!projectHasMetrics && dims.project_impact <= 45) _fs = Math.min(_fs, 62);
-
-  // Double credibility hit: "Currently Learning" + "Aspiring" in same resume.
-  // Advertises gaps AND undermines identity. Neither alone is disqualifying; together they are.
-  if (hasLearningSection && hasWeakTitle) _fs = Math.min(_fs, 55);
-
-  // Low experience relevance is a structural problem, not just a polish issue.
-  // ER < 35 means the candidate's background barely maps to the target role.
-  if (dims.experience_relevance < 35) _fs = Math.min(_fs, 56);
-
-  const finalScore = _fs;
+  const { finalScore, contentScore } = applyScoreCaps(rawFinal, rawContent, dims, redFlags, isCareerPivot);
   const atsScoreCapped = atsScore;
 
   // ── Profile strength — derived from score, then capped after outcome is known ─
@@ -467,7 +432,7 @@ export function normalizeAnalysisResult(raw: unknown, resumeText = ''): Analysis
   // Use the more pessimistic of AI vs rule-based
   const outcomePriority: Record<HiringPrediction['outcome'], number> = { Strong: 3, Possible: 2, Unlikely: 1, No: 0 };
   const finalOutcome = outcomePriority[outcome] <= outcomePriority[aiOutcome] ? outcome : aiOutcome;
-  const finalTier  = deriveCompetitiveTier(finalScore, redFlags, aiTier, finalOutcome);
+  const finalTier  = deriveCompetitiveTier(finalScore, redFlags, aiTier);
 
   const hiringPrediction: HiringPrediction = {
     outcome:          finalOutcome,
