@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { auth } from '@clerk/nextjs/server';
 
 export const runtime     = 'nodejs';
 export const maxDuration = 10;
@@ -73,7 +74,7 @@ ABSOLUTE RULES:
 EXAMPLES OF EXACTLY THE RIGHT OUTPUT (study the register and specificity):
 
 Example A — SWE with a real project, backend role:
-"I built ResumeRoast — an AI resume analyzer that extracts and scores PDFs end-to-end — as a solo project in four weeks, handling every layer from parsing to the React UI. That full-stack ownership is exactly what Stripe's infrastructure team is describing: someone who can ship a data pipeline without handing off at every boundary. Stripe gets an engineer who's already debugged production parsing failures, not someone who'll encounter them for the first time on the job."
+"I built CandidAI — an AI resume analyzer that extracts and scores PDFs end-to-end — as a solo project in four weeks, handling every layer from parsing to the React UI. That full-stack ownership is exactly what Stripe's infrastructure team is describing: someone who can ship a data pipeline without handing off at every boundary. Stripe gets an engineer who's already debugged production parsing failures, not someone who'll encounter them for the first time on the job."
 
 Example B — Data/ML candidate, data engineering JD:
 "My capstone pipeline processed 2.3 million rows of sensor data daily in Spark with zero dropped records over a 90-day production run. That's the scale and reliability problem your data engineering JD is asking someone to own — and I've already solved a version of it. [Company] gets an engineer who treats data loss as a personal failure, not a metrics footnote."
@@ -131,6 +132,14 @@ async function callGroq(userMessage: string): Promise<string> {
 // ── POST handler ──────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
+  const { userId } = await auth()
+  if (!userId) {
+    return NextResponse.json<ApplyPreviewError>(
+      { ok: false, error: 'Unauthorized.', code: 'UNAUTHORIZED' },
+      { status: 401 }
+    )
+  }
+
   try {
     let body: Partial<ApplyPreviewRequest>;
     try {

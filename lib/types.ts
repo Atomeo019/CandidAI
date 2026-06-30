@@ -13,6 +13,7 @@ export type APIErrorCode =
   | 'PARSER_UNAVAILABLE'
   | 'AI_FAILED'
   | 'RATE_LIMITED'
+  | 'PARSE_LIMIT_EXCEEDED'
   | 'SERVER_ERROR';
 
 export type ErrorResponse = {

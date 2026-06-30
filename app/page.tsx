@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { Show, SignInButton, UserButton } from '@clerk/nextjs';
 import { ArrowRight, Sparkles, Flame, Trophy, Share2 } from 'lucide-react';
 
 export default function LandingPage() {
@@ -9,14 +10,26 @@ export default function LandingPage() {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Sparkles className="w-7 h-7 text-purple-500" />
-              <span className="text-xl font-bold gradient-text">ResumeRoast</span>
+              <span className="text-xl font-bold gradient-text">CandidAI</span>
             </div>
-            <Link
-              href="/dashboard"
-              className="px-4 py-2 text-sm font-semibold text-white bg-purple-600 hover:bg-purple-500 rounded-lg transition-colors"
-            >
-              Roast Mine
-            </Link>
+            <div className="flex items-center gap-3">
+              <Show when="signed-in">
+                <UserButton />
+              </Show>
+              <Show when="signed-out">
+                <SignInButton mode="modal">
+                  <button className="px-4 py-2 text-sm font-semibold text-white bg-purple-600 hover:bg-purple-500 rounded-lg transition-colors">
+                    Sign In
+                  </button>
+                </SignInButton>
+              </Show>
+              <Link
+                href="/dashboard"
+                className="px-4 py-2 text-sm font-semibold text-white bg-purple-600 hover:bg-purple-500 rounded-lg transition-colors"
+              >
+                Roast Mine
+              </Link>
+            </div>
           </div>
         </div>
       </nav>
@@ -164,10 +177,18 @@ export default function LandingPage() {
       </main>
 
       <footer className="border-t border-slate-800 py-8">
-        <div className="max-w-7xl mx-auto px-6">
+        <div className="max-w-7xl mx-auto px-6 flex flex-col items-center gap-3">
           <p className="text-center text-slate-500 text-sm">
-            &copy; {new Date().getFullYear()} ResumeRoast. Built for IT professionals who can handle the truth.
+            &copy; {new Date().getFullYear()} CandidAI. Built for IT professionals who can handle the truth.
           </p>
+          <div className="flex flex-wrap justify-center gap-6 text-xs text-slate-600">
+            <Link href="/privacy" className="hover:text-slate-400 transition-colors">Privacy Policy</Link>
+            <Link href="/terms" className="hover:text-slate-400 transition-colors">Terms of Service</Link>
+            <Link href="/cookie-policy" className="hover:text-slate-400 transition-colors">Cookie Policy</Link>
+            <Link href="/refund-policy" className="hover:text-slate-400 transition-colors">Refund Policy</Link>
+            <Link href="/ai-disclaimer" className="hover:text-slate-400 transition-colors">AI Disclaimer</Link>
+            <Link href="/upload-disclosure" className="hover:text-slate-400 transition-colors">Upload Disclosure</Link>
+          </div>
         </div>
       </footer>
     </div>

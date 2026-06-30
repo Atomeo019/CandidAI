@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
+import { useClerk, UserButton, useAuth, SignIn } from '@clerk/nextjs';
 import type { APIResponse } from '@/lib/types';
 import Link from 'next/link';
 import {
@@ -40,6 +41,50 @@ export default function DashboardPage() {
   // The ref write is immediate and visible to any concurrent call.
   const isAnalyzingRef = useRef(false);
   const router = useRouter();
+  const { signOut } = useClerk();
+  const { isSignedIn, userId } = useAuth();
+
+  // Parse gate state
+  const [localParseCount, setLocalParseCount] = useState(0);
+  const [serverRemaining, setServerRemaining] = useState<number | null>(null);
+  const [hasFullAccess, setHasFullAccess] = useState(false);
+  const [showSignInGate, setShowSignInGate] = useState(false);
+  const [showPaywallGate, setShowPaywallGate] = useState(false);
+  const [showClaimBanner, setShowClaimBanner] = useState(false);
+  const [claimEmail, setClaimEmail] = useState('');
+  const [claimLoading, setClaimLoading] = useState(false);
+  const [claimError, setClaimError] = useState<string | null>(null);
+  const [claimSuccess, setClaimSuccess] = useState(false);
+
+  // Detect return from Whop checkout — show claim banner if access wasn't auto-applied
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.location.search.includes('unlocked=true')) {
+      window.history.replaceState({}, '', '/dashboard');
+      // We'll check hasFullAccess after usage loads — see the next useEffect
+      setShowClaimBanner(true);
+    }
+  }, []);
+
+  // Load parse counts on mount and auth change
+  useEffect(() => {
+    const local = parseInt(localStorage.getItem('candidai_parse_count') ?? '0', 10);
+    setLocalParseCount(local);
+
+    if (isSignedIn) {
+      // Close the sign-in gate modal now that the user is authenticated
+      setShowSignInGate(false);
+      fetch('/api/user/usage')
+        .then(r => r.json())
+        .then(d => {
+          setServerRemaining(d.remaining ?? 0);
+          const fa = d.hasFullAccess ?? false;
+          setHasFullAccess(fa);
+          // If access was already auto-applied, hide the claim banner
+          if (fa) setShowClaimBanner(false);
+        })
+        .catch(() => setServerRemaining(null));
+    }
+  }, [isSignedIn]);
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -89,6 +134,17 @@ export default function DashboardPage() {
     // Fix 1 — synchronous ref check. React state (`status`) is async: a second
     // click can read stale `idle` before the first setState('analyzing') commits.
     // The ref write on the next line is immediate and shared across closures.
+    // Require sign-in for all analyses — server enforces this too.
+    // New accounts get 3 free parses, which is better than the old 1-anon-parse flow.
+    if (!isSignedIn) {
+      setShowSignInGate(true);
+      return;
+    }
+    if (isSignedIn && !hasFullAccess && serverRemaining !== null && serverRemaining <= 0) {
+      setShowPaywallGate(true);
+      return;
+    }
+
     if (isAnalyzingRef.current) return;
     isAnalyzingRef.current = true;
 
@@ -177,6 +233,21 @@ export default function DashboardPage() {
         }
         sessionStorage.setItem('analysis_result', JSON.stringify(data.analysis));
         sessionStorage.setItem('analysis_truncated', data.truncated ? 'true' : 'false');
+
+        // Increment parse counts
+        const newLocal = localParseCount + 1;
+        localStorage.setItem('candidai_parse_count', newLocal.toString());
+        setLocalParseCount(newLocal);
+
+        if (isSignedIn) {
+          fetch('/api/user/increment', { method: 'POST' }).catch(() => {});
+          fetch('/api/analyses', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ analysis: data.analysis }),
+          }).catch(() => {});
+        }
+
         router.push('/results');
         return;
       }
@@ -202,8 +273,34 @@ export default function DashboardPage() {
     }
   };
 
+  const handleClaim = async () => {
+    if (!claimEmail.trim()) return;
+    setClaimLoading(true);
+    setClaimError(null);
+    try {
+      const res = await fetch('/api/whop/claim', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ buyerEmail: claimEmail.trim().toLowerCase() }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setClaimSuccess(true);
+        setHasFullAccess(true);
+        setServerRemaining(9999);
+        setShowClaimBanner(false);
+      } else {
+        setClaimError(data.error ?? 'No purchase found for that email.');
+      }
+    } catch {
+      setClaimError('Network error. Please try again.');
+    } finally {
+      setClaimLoading(false);
+    }
+  };
+
   const handleLogOut = () => {
-    router.push('/');
+    signOut(() => router.push('/'));
   };
 
   return (
@@ -213,7 +310,7 @@ export default function DashboardPage() {
       <header className="md:hidden flex items-center justify-between px-4 py-4 border-b border-slate-800">
         <div className="flex items-center gap-2">
           <Sparkles className="w-6 h-6 text-purple-500" />
-          <span className="text-lg font-bold gradient-text">ResumeRoast</span>
+          <span className="text-lg font-bold gradient-text">CandidAI</span>
         </div>
         <button
           onClick={handleLogOut}
@@ -229,7 +326,7 @@ export default function DashboardPage() {
         <div className="p-6 border-b border-slate-800">
           <div className="flex items-center gap-2">
             <Sparkles className="w-7 h-7 text-purple-500" />
-            <span className="text-xl font-bold gradient-text">ResumeRoast</span>
+            <span className="text-xl font-bold gradient-text">CandidAI</span>
           </div>
         </div>
 
@@ -257,12 +354,13 @@ export default function DashboardPage() {
           </div>
         </nav>
 
-        <div className="p-4 border-t border-slate-800">
+        <div className="p-4 border-t border-slate-800 flex items-center gap-3">
+          <UserButton />
           <button
             onClick={handleLogOut}
-            className="flex items-center gap-3 px-4 py-3 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800/50 transition-colors w-full"
+            className="flex items-center gap-2 text-slate-400 hover:text-white transition-colors text-sm"
           >
-            <LogOut className="w-5 h-5" />
+            <LogOut className="w-4 h-4" />
             Log Out
           </button>
         </div>
@@ -409,6 +507,90 @@ export default function DashboardPage() {
           </div>
         </div>
       </main>
+
+      {/* ── Claim purchase banner (shown when returning from Whop with mismatched email) ── */}
+      {showClaimBanner && isSignedIn && !hasFullAccess && !claimSuccess && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 w-full max-w-md mx-4">
+          <div className="bg-slate-900 border border-yellow-500/40 rounded-2xl p-5 shadow-2xl">
+            <p className="text-yellow-300 text-sm font-semibold mb-1">Didn&apos;t get access after purchase?</p>
+            <p className="text-slate-400 text-xs mb-3">
+              If you paid with a different email, enter it below to claim your access.
+            </p>
+            <div className="flex gap-2">
+              <input
+                type="email"
+                value={claimEmail}
+                onChange={e => { setClaimEmail(e.target.value); setClaimError(null); }}
+                placeholder="Email used at Whop checkout"
+                className="flex-1 rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-yellow-500/40"
+              />
+              <button
+                onClick={handleClaim}
+                disabled={claimLoading || claimEmail.trim().length < 5}
+                className="px-4 py-2 rounded-lg bg-yellow-500 hover:bg-yellow-400 text-slate-900 font-semibold text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {claimLoading ? '...' : 'Claim'}
+              </button>
+            </div>
+            {claimError && <p className="mt-2 text-red-400 text-xs">{claimError}</p>}
+            <button
+              onClick={() => setShowClaimBanner(false)}
+              className="mt-2 text-slate-500 hover:text-slate-400 text-xs transition-colors"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Sign-in gate modal ── */}
+      {showSignInGate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl p-8 max-w-sm w-full mx-4 text-center shadow-2xl">
+            <div className="text-4xl mb-4">🔥</div>
+            <h2 className="text-xl font-bold text-white mb-2">Sign in to continue</h2>
+            <p className="text-slate-400 text-sm mb-6">
+              You&apos;ve used your free parse. Sign in with Google to get 4 more free parses.
+            </p>
+            <SignIn routing="hash" />
+            <button
+              onClick={() => setShowSignInGate(false)}
+              className="mt-4 text-slate-500 hover:text-slate-300 text-sm transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Paywall modal ── */}
+      {showPaywallGate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl p-8 max-w-sm w-full mx-4 text-center shadow-2xl">
+            <div className="text-4xl mb-4">💳</div>
+            <h2 className="text-xl font-bold text-white mb-2">You&apos;re out of parses</h2>
+            <p className="text-slate-400 text-sm mb-6">
+              Get <span className="text-white font-semibold">unlimited parses + cover letter</span> for <span className="text-white font-semibold">$4.99</span>. One-time, no subscription.
+            </p>
+            <button
+              onClick={() => {
+                const base = process.env.NEXT_PUBLIC_WHOP_CHECKOUT_URL ?? '';
+                const redirect = encodeURIComponent(window.location.origin + '/dashboard?unlocked=true');
+                window.location.href = `${base}?redirect=${redirect}`;
+              }}
+              className="w-full py-3 px-6 bg-purple-600 hover:bg-purple-500 text-white font-semibold rounded-xl transition-colors mb-3"
+            >
+              Unlock everything — $4.99
+            </button>
+            <button
+              onClick={() => setShowPaywallGate(false)}
+              className="text-slate-500 hover:text-slate-300 text-sm transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

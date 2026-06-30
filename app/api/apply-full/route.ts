@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { auth } from '@clerk/nextjs/server';
+import { prisma } from '@/lib/db';
 
 export const runtime     = 'nodejs';
 export const maxDuration = 25;          // full letter needs more headroom than the preview
@@ -100,7 +102,7 @@ EXAMPLES OF EXACTLY THE RIGHT OUTPUT
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Example A — Backend SWE, fintech JD:
-"I built ResumeRoast — an AI resume analyzer handling PDF parsing, scoring, and Groq API calls — solo, from scratch, in four weeks. That end-to-end ownership is exactly what Stripe's infrastructure team is asking for: someone who can ship a production data pipeline without handing off at every boundary. Stripe gets an engineer who's already debugged parsing failures in production, not someone who'll encounter them for the first time on the job.
+"I built CandidAI — an AI resume analyzer handling PDF parsing, scoring, and Groq API calls — solo, from scratch, in four weeks. That end-to-end ownership is exactly what Stripe's infrastructure team is asking for: someone who can ship a production data pipeline without handing off at every boundary. Stripe gets an engineer who's already debugged parsing failures in production, not someone who'll encounter them for the first time on the job.
 
 The PDF parsing alone had three distinct failure modes — encrypted files, scanned images passed as PDFs, and malformed byte streams — each requiring a different fallback path that I designed and tested individually. The scoring pipeline runs sub-second on Vercel's Hobby tier because I kept the compute client-side until the last possible moment, only hitting the API for the irreducible inference step. Both of those constraints — reliability under malformed input and tight serverless budgets — show up verbatim in your backend JD.
 
@@ -182,6 +184,23 @@ function splitParagraphs(text: string): { hook: string; body: string; close: str
 
 export async function POST(req: NextRequest) {
   try {
+    // ── Auth + access gate ─────────────────────────────────────────────────────
+    const { userId } = await auth();
+    if (!userId) {
+      return NextResponse.json<ApplyFullError>(
+        { ok: false, error: 'Authentication required.', code: 'UNAUTHORIZED' },
+        { status: 401 }
+      );
+    }
+    const dbUser = await prisma.user.findUnique({ where: { id: userId } });
+    const hasFullAccess = dbUser ? Boolean((dbUser as Record<string, unknown>).hasFullAccess) : false;
+    if (!hasFullAccess) {
+      return NextResponse.json<ApplyFullError>(
+        { ok: false, error: 'Full access required. Upgrade to generate cover letters.', code: 'FORBIDDEN' },
+        { status: 403 }
+      );
+    }
+
     let body: Partial<ApplyFullRequest>;
     try {
       body = await req.json();

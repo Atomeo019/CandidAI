@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { auth } from '@clerk/nextjs/server';
+import { prisma } from '@/lib/db';
 import type { ExtractionResponse, AnalysisResponse, ErrorResponse } from '@/lib/types';
 import { normalizeAnalysisResult } from '@/lib/normalize';
 
@@ -6,7 +8,7 @@ import { normalizeAnalysisResult } from '@/lib/normalize';
 const AI_ENABLED    = true;
 const AI_CHAR_LIMIT = 6000;
 const PREVIEW_CHARS = 500;
-const GROQ_TIMEOUT  = 8000; // ms — headroom under Vercel 10s maxDuration
+const GROQ_TIMEOUT  = 5500; // ms — Stage1(5.5s) + Stages2&3 parallel(2.5s) = 8s total, under Vercel 10s limit
 
 // ── AI Prompt ─────────────────────────────────────────────────────────────────
 // Design principles:
@@ -107,7 +109,7 @@ REQUIRED JSON SCHEMA — all fields required:
     "weak_skills": string[] (skills listed in skills section but not demonstrated anywhere in the resume),
     "missing_skills": string[] (important skills absent for the detected role — only list skills NOT already on the resume)
   },
-  "project_analysis": string (Lead with actual project names and tech stacks from the resume. Then assess complexity. Example: "Built 'ResumeRoast' using Next.js and Groq API, deployed on Vercel. Also built a Discord bot in Python. Projects have no stated user counts or production metrics." Never say "the candidate" or give generic advice — name the actual projects.),
+  "project_analysis": string (Lead with actual project names and tech stacks from the resume. Then assess complexity. Example: "Built 'CandidAI' using Next.js and Groq API, deployed on Vercel. Also built a Discord bot in Python. Projects have no stated user counts or production metrics." Never say "the candidate" or give generic advice — name the actual projects.),
   "experience_analysis": string (Name the actual roles and companies from the resume. Describe what they built or owned. Then assess depth. Example: "Interned at XYZ as a backend intern for 3 months, owning the payment integration module. No full-time roles." If no experience, say exactly that.),
   "ats_breakdown": {
     "parsing_risk": "None" | "Low" | "Medium" | "High" | "Critical",
@@ -123,7 +125,8 @@ REQUIRED JSON SCHEMA — all fields required:
   },
   "competitive_position": string (where does this candidate realistically sit vs. the applicant pool they're competing in),
   "roast_headline": string (ONE punchy sentence, max 18 words. A ROAST — expose the most glaring irony, contradiction, weakness, or gap on this specific resume. NOT a compliment. NOT a description. NOT a press release. The headline must identify what is WRONG or IRONIC. If it sounds like a LinkedIn headline or something the candidate would put on their own profile, it is WRONG — rewrite it. Rules: (1) Must name something LITERAL from this resume: a project name, a technology, a section title, a claimed skill, or a school. (2) BANNED openers: "Your resume", "This resume", "The candidate", "With a", "As a". (3) BANNED tone: praise, flattery, enthusiasm. Words like "impressive", "strong", "solid", "great", "talented" are banned. (4) Generate completely fresh — never reuse any example. (5) Format: the snarky thing a FAANG recruiter would mutter to themselves — not admiration, but the one fatal flaw or irony they would call out.),
-  "roast_body": string (3-4 sentences. ROAST — first sentence MUST open with the main flaw, contradiction, or irony. CRITICAL: Do NOT start with a compliment. Words like "impressive", "strong portfolio", "solid", "great" are banned in the opening sentence. Each sentence must name at least one literal item from this resume: a project name, a company, a section, a technology, or a specific claimed skill. Rules: (1) No sentence can open with praise — the first sentence must name the problem. (2) Every sentence must be specific: if you remove the proper nouns, it must collapse. (3) 60% sharp wit that makes the reader laugh and wince simultaneously. 40% cold recruiter logic — the exact mechanical reason this resume loses to a real competitor. (4) Final sentence: the single highest-leverage fix, tied to a named element of this resume. (5) Never say "candidate".)
+  "roast_body": string (3 sentences. GORDON RAMSAY ENERGY -- ruthless hiring manager, 50,000 resumes reviewed, zero patience left. Not cruel -- precise. Every sentence names something LITERAL from this resume: an actual project name, a real section title, a specific technology, a verbatim job title, or a named company. SENTENCE 1: Open cold with the single most embarrassing gap, contradiction, or irony on this resume. Name it by its actual name. No compliments, no softening, no "while X is good". State what is wrong the way a doctor states a diagnosis -- flat, specific, unavoidable. SENTENCE 2: The exact mechanical reason this resume loses in screening vs. a real competitor -- not vague advice, the specific named thing on this resume that costs them the interview. State it like a fact, not a suggestion. SENTENCE 3: The one surgical fix that would change the outcome -- tied to a literal named element on this resume. Delivered like a verdict, not a career coaching tip. HARD BANS -- any sentence containing these words gets rewritten: impressive, solid, strong, great, potential, interesting, good foundation, "candidate", "they", "the applicant", "the author", "the resume shows". GENERIC TEST: Remove all proper nouns from each sentence. If it still reads as a critique of any resume, it is too generic -- rewrite it.),
+  "roast_targets": string[] (EXACTLY 2-3 items. Each is a SHORT VERBATIM FRAGMENT from this specific resume that a recruiter would cringe at — the specific detail that makes this resume uniquely mockable. Priority: (1) the exact job title or headline if it says Aspiring or Enthusiast, (2) items listed under a Currently Learning section — list them as "Currently Learning: [skill]", (3) a project name and its worst gap in 6 words or less like "NoteSphere: deployed, zero metrics stated", (4) a specific skill listed under Skills with zero evidence of use anywhere else in the resume. Requirements: each item must be 3-12 words extracted verbatim or near-verbatim. Never paraphrase — use the actual text. Example output: ["Title: Aspiring Software Developer", "Currently Learning: Django", "NoteSphere: deployed, no user count stated"])
 }
 
 CRITICAL: Do not invent skills as "missing" if they appear in the resume. Do not give "Strong" or "Possible" outcome when Critical red flags exist. If the resume has no projects, project_impact must be 0. Generic feedback is worthless — reference specifics from the resume text.
@@ -263,142 +266,259 @@ async function callGroq(resumeText: string): Promise<unknown> {
   throw lastError;
 }
 
+// ── Template Library ────────────────────────────────────────────────────────────────────────────
+// Human-written roast templates. selectTemplate() picks a category deterministically
+// from roast_targets[]. Stage 2 fills {SLOT} placeholders at temp 0.7.
 
-// ── Groq Roast call ───────────────────────────────────────────────────────────
-// Separate call at temperature 0.75 so the model can take creative risks.
-// The main callGroq stays at 0.3 for analytical accuracy.
-// Both run in parallel — zero extra wall-clock time.
+type RoastTemplate = { template: string; category: string };
 
-async function callGeminiRoast(resumeText: string): Promise<{ headline: string; body: string } | null> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return null;
+const CL_TEMPLATES: string[] = [
+  // CL-1 (v4 CL-04 💀💀) -- collision format
+  `Currently Learning: {COURSE}. Currently Applying: {TITLE}. Currently: unaware these two sentences cancel each other out.`,
+  // CL-2 (v4 CL-03 💀💀💀) -- THE plan is in the resume
+  `Shipped {PROJECT}. Listed {COURSE} as Currently Learning. Applied for {TITLE} anyway. The plan is to learn it after getting hired. This plan is in the resume.`,
+  // CL-3 (v4 CL-10 💀💀💀) -- growth mindset satire
+  `Demonstrates exceptional growth mindset by applying for a {TITLE} role while actively learning {COURSE} — the skill the {TITLE} role requires. Open to feedback.`,
+  // CL-4 (v4 CL-07 💀💀) -- YouTube thumbnail
+  `'Currently Learning: {COURSE}' translates to: 'I know {COURSE} exists, I've seen the thumbnail of a YouTube tutorial about it, and I believe that counts.' It does not count.`,
+  // CL-5 (v4 CL-08 💀💀) -- bro is at peace
+  `Bro put '{COURSE}: Currently Learning' on a {TITLE} application. The {TITLE} role requires {COURSE}. Bro submitted it anyway. Bro is at peace with this.`,
+  // CL-6 (v4 CL-06 💀💀) -- interview question, plan ends here
+  `{PROJECT}: shipped. {COURSE}: currently learning. Interview question: 'Walk me through your experience with {COURSE}.' This is where the plan ends.`,
+  // CL-7 (v4 CL-02 💀💀) -- coffee down
+  `Somewhere a hiring manager just read 'Currently Learning: {COURSE}' on a {TITLE} application and put their coffee down.`,
+  // CL-8 (v4 CL-09) -- genuine question
+  `The job requires {COURSE}. The resume says 'Currently Learning: {COURSE}.' What was the plan here? This is a genuine question.`,
+  // CL-9 (NEW -- 2026 ATS vs human trend)
+  `The ATS passed this resume. Then a human read 'Currently Learning: {COURSE}.' The ATS does not have feelings. The hiring manager does.`,
+  // CL-10 (NEW -- clean deadpan, opposite format)
+  `'Currently Learning: {COURSE}.' '{TITLE} experience required.' Both sentences are on this resume. One of them is a job requirement. The other is its opposite.`,
+];
 
-  const ROAST_SYSTEM = `You are a Comedy Central Roast writer and a viral LinkedIn/Twitter comedian. You have seen thousands of resumes and you have a gift: you can read one in 10 seconds, find the single most self-defeating thing on it, and write one sentence that makes the entire room go silent and then burst out laughing.
+const AT_TEMPLATES: string[] = [
+  // AT-1 (v4 AT-02 💀💀💀 BEST IN LIBRARY) -- knife fight
+  `Applying for a {TITLE} role. Title on the resume: 'Aspiring {TITLE}.' This is the job hunting equivalent of showing up to a knife fight holding a drawing of a knife.`,
+  // AT-2 (v4 AT-07 💀💀💀) -- driver's license
+  `'Aspiring {TITLE}' is the professional equivalent of writing 'aspiring adult' on your driver's license application. The goal is understood. The timing is the issue.`,
+  // AT-3 (v4 AT-04 💀💀) -- bro x47
+  `Bro put 'Aspiring {TITLE}' at the top of a {TITLE} job application and hit send. 47 times. Bro is living entirely by his own rules.`,
+  // AT-4 (v4 AT-03 💀💀) -- edit history would be revealing
+  `Most people delete 'Aspiring' before submitting. This resume kept it. In the header. In bold. The edit history on this document would be very revealing.`,
+  // AT-5 (v4 AT-06 💀💀) -- recruiter closed laptop
+  `Somewhere a recruiter opened this resume, read 'Aspiring {TITLE},' and had to close their laptop for five minutes. They came back. They read the rest. They're still processing.`,
+  // AT-6 (v4 AT-05 💀💀) -- manifesting or misunderstanding
+  `Passionate about becoming a {TITLE}. Currently not a {TITLE}. Applying to {TITLE} roles anyway. This is either manifesting or a misunderstanding of how hiring works. The resume does not clarify.`,
+  // AT-7 (v4 AT-10 💀💀) -- climbing out of those two words
+  `This resume opens with 'Aspiring {TITLE}.' Every sentence after that is trying to climb out of those two words. Some of them make it. Most don't.`,
+  // AT-8 (v4 AT-08) -- gap is the entire interview process
+  `Job title: Aspiring {TITLE}. Position applied for: {TITLE}. Gap between these two facts: the entire interview process.`,
+  // AT-9 (NEW) -- Step 2 was attempted
+  `Step 1: become a {TITLE}. Step 2: get hired as a {TITLE}. Step 1 was skipped. Step 2 was attempted. This is the resume from Step 2.`,
+  // AT-10 (NEW) -- it was a choice. in writing. sent.
+  `'Aspiring {TITLE}' was the chosen opening. Not 'Junior {TITLE}.' Not 'Entry-Level {TITLE}.' Aspiring. It was a choice. In writing. On a job application. Sent.`,
+];
 
-Your headline is a punchline. It gets screenshotted. It gets sent to group chats. It makes the person who reads it say "oh damn" out loud. It is brutal, specific, sarcastic, and cold — but it lands because it is 100% true.
+const NM_TEMPLATES: string[] = [
+  // NM-1 (v4 NM-06 💀💀💀 THE server loneliness -- full version)
+  `Imagine being the {PROJECT} server. Deployed. Fully operational. Zero confirmed users. Just the developer. Every day. Checking if it's still up.`,
+  // NM-2 (v4 NM-08 💀💀) -- food blogger, no receipts
+  `This resume describes {PROJECT} the same way a food blogger describes a meal they didn't finish. Beautifully written. No receipts.`,
+  // NM-3 (v4 NM-02 💀💀) -- receipts are in the mail
+  `Shipped {PROJECT}. Users: undisclosed. Revenue: undisclosed. Impact: described as significant. The receipts are in the mail.`,
+  // NM-4 (v4 NM-10 💀💀 + kicker) -- bro thought he cooked
+  `Bro deployed {PROJECT}, documented zero metrics, and submitted this to real companies. Bro thought he cooked. The metrics disagree.`,
+  // NM-5 (v4 NM-01 💀💀) -- 'deployed' doing unreasonable work
+  `The word 'deployed' is doing an unreasonable amount of work in this sentence.`,
+  // NM-6 (v4 NM-03) -- CRUD app with no documented users
+  `'{PROJECT}: A full-stack application' is one way to describe a CRUD app with no documented users.`,
+  // NM-7 (v4 NM-04 💀💀) -- whatever this is, it is brave
+  `{PROJECT}: deployed. Users: theoretical. The application was submitted anyway. Whatever this is, it is brave.`,
+  // NM-8 (v4 NM-07 💀💀) -- repetition format, PROJECT stated
+  `Projects: {PROJECT}. Users of {PROJECT}: not stated. Revenue from {PROJECT}: not stated. Impact of {PROJECT}: described as significant. '{PROJECT}': stated.`,
+  // NM-9 (NEW -- GitHub reality check, 2025 specific)
+  `{PROJECT} has a GitHub link. The GitHub link has zero stars. The README has four lines. The resume calls this 'deployed to production.' The word 'production' is working very hard right now.`,
+  // NM-10 (v4 NM-09 upgraded) -- most confident framing
+  `'{PROJECT}: built and deployed' is the most confident possible framing of a project that has never been used by anyone who wasn't also the one who built it.`,
+];
 
-━━━━ WHAT GREAT LOOKS LIKE ━━━━
-Study these. This is the energy. This is what shareable feels like:
+const CA_TEMPLATES: string[] = [
+  // CA-1 (v4 CA-01 💀💀) -- listed voluntarily (full version)
+  `'{TARGET_1}' appears on this resume. It was not discovered during a background check. It was listed voluntarily.`,
+  // CA-2 (v4 CA-02 💀💀💀) -- loading screen
+  `{PROJECT}: shipped. {COURSE}: in progress. {TITLE}: current status. This resume is a loading screen.`,
+  // CA-3 (v4 CA-04 💀💀) -- cannot take it back
+  `This resume was submitted to real companies by a real person who looked at it, nodded, and pressed send. That moment happened. We cannot take it back.`,
+  // CA-4 (v4 CA-07 💀💀💀) -- room got very quiet
+  `A recruiter opened this resume and found {TARGET_1}. Then they found {TARGET_2}. Then the room got very quiet.`,
+  // CA-5 (v4 CA-03 💀💀) -- close enough
+  `{PROJECT}: shipped. {COURSE}: still buffering. This is the resume of someone who looked at an incomplete timeline and said 'close enough.'`,
+  // CA-6 (v4 CA-08 💀💀) -- mood board formatted as PDF
+  `This is not a professional document. This is a mood board. {PROJECT} is on it. {COURSE} is on it. Someone formatted it as a PDF and called it done.`,
+  // CA-7 (v4 CA-06 💀💀) -- bro, they will have notes
+  `Bro put '{TARGET_1}' AND '{TARGET_2}' on the same resume and submitted it to real companies. The companies are reviewing it now. They will have notes.`,
+  // CA-8 (v4 CA-09 💀💀💀) -- LinkedIn satire + open to relocation
+  `Excited to leverage synergistic growth opportunities while Currently Learning {COURSE} and having Deployed {PROJECT} with no documented impact. Open to relocation.`,
+  // CA-9 (NEW) -- two people who have never met
+  `The skills section made a promise. The projects section made a different promise. This is the resume of two people who have never met and have been accidentally combined into one document.`,
+  // CA-10 (NEW) -- recruiter dinner story
+  `{TARGET_1}: listed. {TARGET_2}: also listed. The recruiter reviewing this has already read 200 resumes today. This one just became the story they tell at dinner.`,
+];
 
-"The confidence of running a software agency while Django is still in your Currently Learning section"
-"POV: agency founder. Shipped 3 client apps. Never once checked if a single user came back."
-"NoteSphere launched — Sneha never thought to count the users"
-"Bro built a full-stack app for real paying clients, apparently without measuring whether it worked"
-"AI Product Builder. The AI section: one ChatGPT API call. The metrics section: silence."
-"Three years of experience. Zero projects with a number in them."
-
-━━━━ WHAT TRASH LOOKS LIKE (never write these) ━━━━
-"X ships without metrics" — this is a bug report, not comedy
-"X lacks Y" — this is a performance review
-"X still learning basics" — a verdict with no irony and no humor
-"X is missing Y" — a description, not a punchline
-"X can't quantify success" — corporate speak, not a roast
-Two-word headlines — "VesperDev founded", "Developer struggles" — these are nothing
-
-━━━━ THE FORMATS THAT GO VIRAL ━━━━
-Pick whichever fits. Fill it with specifics from THIS resume:
-"The confidence of [their grand claim] while [the embarrassing thing on the resume]"
-"POV: [their exact title or identity]. [the gap, stated cold and flat]."
-"[Project name] launched — [person] never thought to [the thing they obviously skipped]"
-"Bro/Girl [impressive thing they claimed], never once [what they completely ignored]"
-"[Exact title from resume] — [the one detail from the resume that destroys that title]"
-
-━━━━ THE JOB ━━━━
-Write 5 headline options. Each one must:
-1. Name something SPECIFIC from the resume — an actual project name, their exact job title, a real section
-2. Land a punch through irony, sarcasm, or cold devastating specificity
-3. Be something a human would actually post on Twitter/X
-4. Make someone feel something — a wince, a laugh, a cold chill
-
-Then write the body: 3 sentences. Cold. Specific. No advice, no encouragement, no softening.
-- Sentence 1: Name the project, name the claim, name the gap. Factual devastation.
-- Sentence 2: Exactly why this costs them the interview — stated like a machine, not a person.
-- Sentence 3: The observation that stings because it is undeniably, embarrassingly true.
-
-Return ONLY valid JSON, nothing else:
-{
-  "h1": "headline option 1",
-  "h2": "headline option 2",
-  "h3": "headline option 3",
-  "h4": "headline option 4",
-  "h5": "headline option 5",
-  "body": "3-sentence roast body"
-}`;
-
-  // Score headlines: pick the one that sounds like a roast, not a product review
-  function scoreHeadline(h: string): number {
-    if (!h || h.length < 10) return -99;
-    let score = 0;
-    if (/\bapparently\b/i.test(h)) score += 4;
-    if (/\bsomehow\b/i.test(h)) score += 4;
-    if (/\bwhile\b/i.test(h)) score += 3;
-    if (/\bnever thought\b/i.test(h)) score += 4;
-    if (/\bconfidence of\b/i.test(h)) score += 5;
-    if (/^pov:/i.test(h)) score += 4;
-    if (/\baudacity\b/i.test(h)) score += 4;
-    if (/\byet\b|\bthough\b/i.test(h)) score += 2;
-    if (/bro |girl |my guy/i.test(h)) score += 3;
-    if (h.length > 50) score += 2;
-    if (h.length > 70) score += 2;
-    // Penalise flat patterns
-    if (/ships? (web apps?|apps?|projects?) without/i.test(h)) score -= 8;
-    if (/\bcannot?\b.*\bquantify\b|\bcan't\b.*\bquantify\b/i.test(h)) score -= 8;
-    if (/\blacks?\b|\bstruggles? with\b/i.test(h)) score -= 8;
-    if (/still learning basics/i.test(h)) score -= 10;
-    if (/without metrics/i.test(h)) score -= 6;
-    if (/is missing/i.test(h)) score -= 6;
-    if (/^[A-Za-z ]+ founded$/i.test(h.trim())) score -= 20;
-    return score;
+function selectTemplate(targets: string[]): RoastTemplate {
+  const combined = targets.join(' ').toLowerCase();
+  if (combined.includes('currently learning:')) {
+    return { template: CL_TEMPLATES[Math.floor(Math.random() * CL_TEMPLATES.length)], category: 'A' };
   }
+  if (combined.includes('aspiring') || combined.includes('enthusiast')) {
+    return { template: AT_TEMPLATES[Math.floor(Math.random() * AT_TEMPLATES.length)], category: 'C' };
+  }
+  if (
+    combined.includes('no metric') || combined.includes('zero metric') ||
+    combined.includes('no user')    || combined.includes('zero user')   ||
+    combined.includes('no documented') || combined.includes('not stated')
+  ) {
+    return { template: NM_TEMPLATES[Math.floor(Math.random() * NM_TEMPLATES.length)], category: 'B' };
+  }
+  return { template: CA_TEMPLATES[Math.floor(Math.random() * CA_TEMPLATES.length)], category: 'F' };
+}
+
+
+// ── Groq Roast: Stage 2 ───────────────────────────────────────────────────────
+// Tiny dedicated call for the roast one-liner. Separate from main analysis so
+// we can use high temp (creativity) without risking JSON drift in the main call.
+// Input: roast_targets array from Stage 1 (specific verbatim resume facts).
+// Output: one savage sentence, max 150 chars. Returns null on any failure.
+
+async function callGroqRoast(targets: string[], selectedTemplate: string): Promise<string | null> {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey || targets.length === 0) return null;
+
+  const targetList = targets.map((t, i) => `${i + 1}. "${t}"`).join('\n');
 
   try {
     const res = await withTimeout(
-      fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            system_instruction: { parts: [{ text: ROAST_SYSTEM }] },
-            contents: [{
-              parts: [{ text: `Write 5 roast headline options + body for this resume. Use the actual names, titles, and projects from it:\n\n${resumeText.slice(0, 3000)}` }],
-            }],
-            generationConfig: {
-              temperature: 1.0,
-              maxOutputTokens: 700,
-              responseMimeType: 'application/json',
+      fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'llama-3.3-70b-versatile',
+          temperature: 0.3,
+          max_tokens: 100,
+          messages: [
+            {
+              role: 'system',
+              content: `You are a slot-filling assistant with one job: complete a pre-written roast template by replacing every {SLOT} placeholder with the matching resume fact.
+
+Return ONLY the completed sentence. No surrounding quotes. No preamble. No explanation. Just the sentence.
+
+SLOT MAPPING:
+{PROJECT}  = the project name only (e.g. "NoteSphere", "TaskFlow") — 1-2 words, never a description
+{COURSE}   = the core skill only from a "Currently Learning:" fact — 1-3 words max
+{TITLE}    = the target job role only — 1-3 words, drop qualifiers like "Aspiring" or "Junior"
+{SKILL}    = a specific technology — 1-2 words
+{TARGET_1} = the first verbatim resume fact, exactly as written
+{TARGET_2} = the second verbatim resume fact, exactly as written
+
+SLOT LENGTH RULES (hard limits — violating these breaks the template):
+- {COURSE}: 3 words maximum. Shorten aggressively. "Advanced Data Structures & Algorithms" → "Data Structures". "Deep Learning fundamentals" → "Deep Learning". "Machine Learning with Python" → "Machine Learning".
+- {TITLE}: 3 words maximum. Strip "Aspiring", "Junior", "Entry-Level". "Aspiring Software Developer" → "Software Developer". "Junior Frontend Engineer" → "Frontend Engineer". If {TITLE} is not in the facts, write "Software Developer role".
+- {PROJECT}: exact project name only. "NoteSphere" — not "NoteSphere: a task management app".
+- {SKILL}: 1-2 words. The technology name only.
+
+RULES:
+- Replace every {SLOT} in the template. No placeholder may remain in the output.
+- Preserve all punctuation, capitalization, and tone from the template exactly.
+- Output only the completed sentence. Nothing else.`,
             },
-          }),
-        }
-      ),
-      12000,
-      'Gemini Roast'
+            {
+              role: 'user',
+              content: `Template to complete:\n\n${selectedTemplate}\n\nResume facts (verbatim):\n${targetList}\n\nFill every {SLOT} using the facts above. Return only the completed sentence.`,
+            },
+          ],
+        }),
+      }),
+      2500,
+      'Groq Roast'
     );
+
     if (!res.ok) {
-      console.warn('Gemini roast HTTP error:', res.status);
+      console.warn(`⚠️  Groq Roast returned ${res.status}`);
       return null;
     }
     const json = await res.json();
-    const text: string = json?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-    if (!text) return null;
-    const parsed = JSON.parse(text);
-
-    const candidates: string[] = ['h1','h2','h3','h4','h5']
-      .map((k: string) => parsed[k])
-      .filter((h: unknown): h is string => typeof h === 'string' && h.trim().length > 5);
-
-    const headline = candidates.sort((a: string, b: string) => scoreHeadline(b) - scoreHeadline(a))[0] ?? '';
-
-    return {
-      headline,
-      body: typeof parsed.body === 'string' ? parsed.body.trim() : '',
-    };
+    const raw: string = (json?.choices?.[0]?.message?.content ?? '').trim();
+    // Strip surrounding quotes the model sometimes adds
+    const text = raw.replace(/^["'\`]|["'\`]$/g, '').trim();
+    if (text.length < 10 || text.length > 350) return null;
+    return text;
   } catch (e: any) {
-    console.warn('Gemini roast call failed (non-fatal):', e?.message);
+    console.warn(`⚠️  Groq Roast failed: ${e?.message?.slice(0, 80) ?? e}`);
     return null;
   }
 }
 
+
+
+// ── Groq Roast Body: Stage 3 ─────────────────────────────────────────────────
+// Rewrites roast_body at temp 0.7. Stage 1 at temp 0.3 defaults to safe
+// career-advice prose and violates the hard-ban list (e.g. "impressive",
+// "the candidate should"). Stage 3 fires in parallel with Stage 2 via
+// Promise.allSettled — zero added latency.
+async function callGroqRoastBody(targets: string[]): Promise<string | null> {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey || targets.length === 0) return null;
+
+  const targetList = targets.map((t, i) => `${i + 1}. "${t}"`).join('\n');
+
+  try {
+    const res = await withTimeout(
+      fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'llama-3.3-70b-versatile',
+          temperature: 0.7,
+          max_tokens: 220,
+          messages: [
+            {
+              role: 'system',
+              content: `You are a brutal FAANG recruiter who has reviewed 50,000 resumes. Write EXACTLY 3 sentences about this specific resume. No warmup. No intro. Start with sentence 1.
+
+S1: The single most embarrassing gap, contradiction, or irony on this resume. Name the literal thing by its actual name from the resume. Cold. Flat. No compliments. No softening. Like a doctor stating a diagnosis.
+
+S2: The exact mechanical reason this resume loses in screening versus a real competitor in the same pool. Name the specific thing on this resume that costs the interview. State it as a fact, not advice.
+
+S3: One surgical fix tied to a specific named element on this resume. A verdict. Not a coaching tip. Not a suggestion.
+
+BANNED WORDS — if any of these appear in a sentence, rewrite it from scratch:
+impressive, solid, strong, great, potential, promising, game-changer, the candidate, they should, the applicant, demonstrates, would benefit, could improve, overall, well-rounded
+
+GENERIC TEST: Remove all proper nouns from each sentence. If the sentence still reads as feedback on any resume, it is too generic. Rewrite it until it can only describe this specific resume.
+
+Output: 3 sentences. Period after each. No labels. No preamble. Nothing else.`,
+            },
+            {
+              role: 'user',
+              content: `Resume facts (verbatim):\n${targetList}\n\nWrite the 3 sentences now.`,
+            },
+          ],
+        }),
+      }),
+      2500,
+      'Groq RoastBody'
+    );
+
+    if (!res.ok) { console.warn(`⚠️  Groq RoastBody returned ${res.status}`); return null; }
+    const json = await res.json();
+    const raw: string = (json?.choices?.[0]?.message?.content ?? '').trim();
+    const text = raw.replace(/^["'`]|["'`]$/g, '').trim();
+    if (text.length < 30 || text.length > 700) return null;
+    return text;
+  } catch (e: any) {
+    console.warn(`⚠️  Roast Stage 3 failed: ${e?.message?.slice(0, 80) ?? e}`);
+    return null;
+  }
+}
 
 // ── POST Handler ──────────────────────────────────────────────────────────────
 
@@ -406,6 +526,34 @@ export async function POST(req: NextRequest) {
   const start = Date.now();
 
   try {
+    // ── 0. Server-side parse gate ─────────────────────────────────────────────
+    // Require auth for all requests — anonymous callers could otherwise bypass
+    // the client-side gate and burn Groq credits indefinitely.
+    // New users get 3 free parses on signup; no anonymous parse needed.
+    const { userId } = await auth();
+    if (!userId) {
+      const body: ErrorResponse = {
+        ok: false, mode: 'error',
+        error: 'Sign in to analyse your resume. New accounts get 3 free analyses.',
+        code: 'RATE_LIMITED',
+      };
+      return NextResponse.json(body, { status: 401 });
+    }
+
+    // Check signed-in user parse limit
+    const dbUser = await prisma.user.findUnique({ where: { id: userId } });
+    if (dbUser) {
+      const fullAccess = Boolean((dbUser as Record<string, unknown>).hasFullAccess);
+      if (!fullAccess && dbUser.parseCount >= dbUser.parseLimit) {
+        const body: ErrorResponse = {
+          ok: false, mode: 'error',
+          error: 'You have used all your free parses. Upgrade to unlock unlimited.',
+          code: 'PARSE_LIMIT_EXCEEDED',
+        };
+        return NextResponse.json(body, { status: 403 });
+      }
+    }
+
     // ── 1. File ────────────────────────────────────────────────────────────────
     const formData = await req.formData();
     const file = (formData.get('file') || formData.get('resume')) as File | null;
@@ -418,6 +566,17 @@ export async function POST(req: NextRequest) {
     const bytes  = await file.arrayBuffer();
     const buffer = Buffer.from(bytes);
     console.log(`📥 Received file: "${file.name}" — ${buffer.length} bytes`);
+
+    // Server-side file size guard (5 MB) — client validates too but API can be called directly
+    const MAX_BYTES = 5 * 1024 * 1024;
+    if (buffer.length > MAX_BYTES) {
+      const body: ErrorResponse = {
+        ok: false, mode: 'error',
+        error: 'File exceeds 5 MB limit. Compress or re-export your PDF.',
+        code: 'INVALID_PDF',
+      };
+      return NextResponse.json(body, { status: 413 });
+    }
 
     // ── 2. PDF header check ────────────────────────────────────────────────────
     const header = buffer.slice(0, 8).toString('ascii');
@@ -530,15 +689,9 @@ export async function POST(req: NextRequest) {
 
     console.log(`🤖 Calling Groq — ${textForAI.length} chars, truncated: ${truncated}`);
 
-    // Run analysis and roast in parallel — roast needs higher temperature,
-    // so it has its own Groq call. If roast fails, the main analysis fallback is used.
     let rawAIOutput: unknown;
-    let rawRoast: { headline: string; body: string } | null = null;
     try {
-      [rawAIOutput, rawRoast] = await Promise.all([
-        callGroq(textForAI),
-        callGeminiRoast(textForAI),
-      ]);
+      rawAIOutput = await callGroq(textForAI);
     } catch (e: any) {
       console.error(`❌ Groq failed: ${e?.message ?? e} [+${Date.now() - start}ms]`);
       const body: ErrorResponse = {
@@ -549,13 +702,34 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(body, { status: 500 });
     }
 
-    // normalizeAnalysisResult enforces contract and applies anti-inflation rules.
-    // We pass resumeText so it can filter hallucinated missing_skills.
     const analysis = normalizeAnalysisResult(rawAIOutput, resumeText);
 
-    // Override roast with the high-temperature result if the separate call succeeded.
-    if (rawRoast?.headline) analysis.roast_headline = rawRoast.headline;
-    if (rawRoast?.body)     analysis.roast_body     = rawRoast.body;
+    // Stage 2: roast one-liner — tiny separate call so temp 0.9 can't corrupt the main JSON
+    const rawTargets = (rawAIOutput as Record<string, unknown>)?.roast_targets;
+    const roastTargets: string[] = Array.isArray(rawTargets)
+      ? rawTargets.filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
+      : [];
+    if (roastTargets.length > 0) {
+      const { template: roastTemplate, category: roastCategory } = selectTemplate(roastTargets);
+      // Run Stage 2 (headline) and Stage 3 (body) in parallel — no latency cost.
+      const [headlineResult, bodyResult] = await Promise.allSettled([
+        callGroqRoast(roastTargets, roastTemplate),
+        callGroqRoastBody(roastTargets),
+      ]);
+      if (headlineResult.status === 'fulfilled' && headlineResult.value) {
+        analysis.roast_headline = headlineResult.value;
+        console.log(`🔥 Roast headline: "${headlineResult.value}"`);
+      } else {
+        console.warn('⚠️  Roast Stage 2 returned null — keeping Stage 1 headline');
+      }
+      if (bodyResult.status === 'fulfilled' && bodyResult.value) {
+        analysis.roast_body = bodyResult.value;
+        console.log('🔥 Roast body: Stage 3 complete');
+      } else {
+        console.warn('⚠️  Roast Stage 3 returned null — keeping Stage 1 body');
+      }
+    }
+
     console.log(`✅ Analysis complete — score: ${analysis.final_score}, outcome: ${analysis.hiring_prediction.outcome} [+${Date.now() - start}ms]`);
 
     const successBody: AnalysisResponse = {

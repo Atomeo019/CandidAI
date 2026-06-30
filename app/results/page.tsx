@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useAuth } from '@clerk/nextjs';
 import { useRouter } from 'next/navigation';
 import {
   Sparkles,
@@ -27,6 +28,7 @@ import {
 } from 'lucide-react';
 import type { AnalysisResult, RedFlag, HiringPrediction, ResumeTier } from '@/lib/types';
 import { normalizeAnalysisResult } from '@/lib/normalize';
+import { toast } from 'sonner';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -137,8 +139,19 @@ export default function ResultsPage() {
   const [applyLoading, setApplyLoading]   = useState(false);
   const [applyPreview, setApplyPreview]   = useState<string | null>(null);
   const [applyError, setApplyError]       = useState<string | null>(null);
+  const [hasFullAccess, setHasFullAccess]   = useState(false);
 
   const router = useRouter();
+  const { isSignedIn } = useAuth();
+
+  // Fetch paid status on mount
+  useEffect(() => {
+    if (!isSignedIn) return;
+    fetch('/api/user/usage')
+      .then(r => r.json())
+      .then(d => setHasFullAccess(d.hasFullAccess ?? false))
+      .catch(() => {});
+  }, [isSignedIn]);
 
   useEffect(() => {
     try {
@@ -211,6 +224,30 @@ export default function ResultsPage() {
     );
   }
 
+  // ── Unlock handler ───────────────────────────────────────────────────────────────
+  async function handleUnlock() {
+    if (!analysis || jdText.trim().length < 50) return;
+    // Store data so /cover-letter can pick it up after redirect
+    sessionStorage.setItem('cl_jd', jdText.trim());
+    sessionStorage.setItem('cl_analysis', JSON.stringify({
+      detected_role:       analysis.detected_role,
+      project_analysis:    analysis.project_analysis,
+      experience_analysis: analysis.experience_analysis,
+      strengths:           analysis.strengths,
+      skills_analysis:     analysis.skills_analysis,
+    }));
+
+    if (hasFullAccess) {
+      router.push('/cover-letter');
+      return;
+    }
+
+    // Not paid — redirect to Gumroad, return to cover-letter after payment
+    const base = process.env.NEXT_PUBLIC_WHOP_CHECKOUT_URL ?? '';
+    const redirect = encodeURIComponent(window.location.origin + '/cover-letter?unlocked=true');
+    window.location.href = `${base}?redirect=${redirect}`;
+  }
+
   // ── Apply Engine handler ───────────────────────────────────────────────────────
   async function generateApplyPreview() {
     if (!analysis || jdText.trim().length < 50) return;
@@ -267,7 +304,7 @@ export default function ResultsPage() {
           </button>
           <div className="flex items-center gap-2">
             <Sparkles className="w-7 h-7 text-purple-500" />
-            <span className="text-xl font-bold gradient-text">ResumeRoast</span>
+            <span className="text-xl font-bold gradient-text">CandidAI</span>
           </div>
         </div>
       </nav>
@@ -677,12 +714,13 @@ export default function ResultsPage() {
                     <p className="text-white font-semibold text-center mb-1">Get your full tailored cover letter</p>
                     <p className="text-slate-400 text-sm text-center mb-4">3 complete paragraphs, personalized to this job description.</p>
                     <button
-                      disabled
-                      className="px-5 py-2.5 rounded-lg bg-purple-600/50 text-white text-sm font-semibold cursor-not-allowed opacity-70 border border-purple-500/30"
+                      onClick={handleUnlock}
+                      disabled={jdText.trim().length < 50}
+                      className="px-5 py-2.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-sm font-semibold transition-colors border border-purple-500/50 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      Unlock Full Cover Letter — Coming Soon
+                      {hasFullAccess ? 'Generate Full Cover Letter →' : 'Unlock Full Cover Letter — $4.99'}
                     </button>
-                    <p className="text-slate-500 text-xs mt-2">Free during beta</p>
+                    <p className="text-slate-500 text-xs mt-2">{hasFullAccess ? 'Included in your plan' : 'One-time · no subscription'}</p>
                   </div>
                 </div>
               </div>
@@ -861,7 +899,7 @@ export default function ResultsPage() {
                 <div className="absolute top-6 left-6 right-6 flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <Sparkles className="w-5 h-5 text-purple-400" />
-                    <span className="text-sm font-bold text-purple-300 tracking-wide">ResumeRoast</span>
+                    <span className="text-sm font-bold text-purple-300 tracking-wide">CandidAI</span>
                   </div>
                   <span className="text-xs text-slate-500 uppercase tracking-widest">{analysis.detected_role}</span>
                 </div>
@@ -899,7 +937,9 @@ export default function ResultsPage() {
                 {/* Bottom CTA */}
                 <div className="absolute bottom-6 left-6 right-6 text-center">
                   <p className="text-slate-500 text-xs">Get your resume roasted at</p>
-                  <p className="text-slate-300 text-sm font-bold">resumeroast.app</p>
+                  <p className="text-slate-300 text-sm font-bold">
+                    {typeof window !== 'undefined' ? window.location.hostname : 'candidai.app'}
+                  </p>
                 </div>
               </div>
 
@@ -912,14 +952,23 @@ export default function ResultsPage() {
                   Close
                 </button>
                 <button
-                  onClick={() => {
-                    const el = document.getElementById('share-card');
-                    if (el) el.style.outline = '2px solid transparent';
-                    alert('Screenshot the card above and post it. Video screen-recording works great for Reels!');
+                  onClick={async () => {
+                    const url = window.location.origin + '/dashboard';
+                    const shareData = {
+                      title: `I got a Tier ${analysis.tier} on CandidAI`,
+                      text: `"${analysis.roast_headline}" — ${analysis.final_score}/100. Get your resume roasted:`,
+                      url,
+                    };
+                    if (navigator.share && navigator.canShare?.(shareData)) {
+                      try { await navigator.share(shareData); } catch { /* user dismissed */ }
+                    } else {
+                      await navigator.clipboard.writeText(`${shareData.text} ${url}`);
+                      toast.success('Copied to clipboard! Paste it anywhere.');
+                    }
                   }}
                   className="px-5 py-2.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-sm font-semibold transition-colors"
                 >
-                  Screenshot &amp; Share
+                  Share
                 </button>
               </div>
               <p className="text-slate-600 text-xs">Tip: use your phone&rsquo;s screenshot for best quality</p>

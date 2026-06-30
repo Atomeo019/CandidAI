@@ -14,6 +14,7 @@ const nextConfig = {
     // 2. outputFileTracingIncludes — force Vercel to ship all of pdf-parse's
     //    bundled pdfjs files so they exist on disk at /var/task/node_modules/ when
     //    the serverless function runs.
+    serverActions: true,
     serverComponentsExternalPackages: ['pdf-parse', 'pdfjs-dist'],
     outputFileTracingIncludes: {
       '/api/analyze': [
