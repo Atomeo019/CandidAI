@@ -6,7 +6,6 @@ import { useClerk, UserButton, useAuth, SignIn } from '@clerk/nextjs';
 import type { APIResponse } from '@/lib/types';
 import Link from 'next/link';
 import {
-  Sparkles,
   LayoutDashboard,
   FileText,
   Target,
@@ -18,6 +17,7 @@ import {
   Flame,
   Trophy
 } from 'lucide-react';
+import { Button } from '@/components/brand/Button';
 
 const MAX_FILE_SIZE_MB = 10;
 const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
@@ -304,17 +304,17 @@ export default function DashboardPage() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 flex flex-col md:flex-row">
+    <div className="min-h-screen bg-background text-foreground flex flex-col md:flex-row">
 
       {/* ── Mobile top bar (hidden on desktop) ── */}
-      <header className="md:hidden flex items-center justify-between px-4 py-4 border-b border-slate-800">
-        <div className="flex items-center gap-2">
-          <Sparkles className="w-6 h-6 text-purple-500" />
-          <span className="text-lg font-bold gradient-text">CandidAI</span>
-        </div>
+      <header className="md:hidden flex items-center justify-between px-5 h-16 border-b border-border">
+        <Link href="/" className="flex items-center gap-2">
+          <Flame className="w-5 h-5 text-gold" />
+          <span className="font-display text-2xl uppercase tracking-wide leading-none pt-0.5">CandidAI</span>
+        </Link>
         <button
           onClick={handleLogOut}
-          className="flex items-center gap-2 text-slate-400 hover:text-white transition-colors text-sm"
+          className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.15em] text-muted-foreground hover:text-foreground transition-colors"
         >
           <LogOut className="w-4 h-4" />
           Exit
@@ -322,43 +322,43 @@ export default function DashboardPage() {
       </header>
 
       {/* ── Sidebar (hidden on mobile) ── */}
-      <aside className="hidden md:flex w-64 border-r border-slate-800 flex-col">
-        <div className="p-6 border-b border-slate-800">
-          <div className="flex items-center gap-2">
-            <Sparkles className="w-7 h-7 text-purple-500" />
-            <span className="text-xl font-bold gradient-text">CandidAI</span>
-          </div>
+      <aside className="hidden md:flex w-64 border-r border-border flex-col">
+        <div className="px-6 h-16 flex items-center border-b border-border">
+          <Link href="/" className="flex items-center gap-2">
+            <Flame className="w-5 h-5 text-gold" />
+            <span className="font-display text-2xl uppercase tracking-wide leading-none pt-0.5">CandidAI</span>
+          </Link>
         </div>
 
         <nav className="flex-1 p-4">
           <div className="space-y-1">
             <Link
               href="/dashboard"
-              className="flex items-center gap-3 px-4 py-3 rounded-lg bg-purple-600/10 text-purple-400 font-medium transition-colors"
+              className="flex items-center gap-3 px-4 py-3 font-mono text-xs uppercase tracking-[0.15em] text-gold border-l-2 border-gold bg-gold/5 transition-colors"
             >
-              <LayoutDashboard className="w-5 h-5" />
+              <LayoutDashboard className="w-4 h-4" />
               Dashboard
             </Link>
-            <button disabled className="flex items-center gap-3 px-4 py-3 rounded-lg text-slate-600 cursor-not-allowed w-full">
-              <FileText className="w-5 h-5" />
+            <button disabled className="flex items-center gap-3 px-4 py-3 border-l-2 border-transparent font-mono text-xs uppercase tracking-[0.15em] text-muted-foreground/60 cursor-not-allowed w-full">
+              <FileText className="w-4 h-4" />
               My Resumes
             </button>
-            <button disabled className="flex items-center gap-3 px-4 py-3 rounded-lg text-slate-600 cursor-not-allowed w-full">
-              <Target className="w-5 h-5" />
+            <button disabled className="flex items-center gap-3 px-4 py-3 border-l-2 border-transparent font-mono text-xs uppercase tracking-[0.15em] text-muted-foreground/60 cursor-not-allowed w-full">
+              <Target className="w-4 h-4" />
               Matches
             </button>
-            <button disabled className="flex items-center gap-3 px-4 py-3 rounded-lg text-slate-600 cursor-not-allowed w-full">
-              <Settings className="w-5 h-5" />
+            <button disabled className="flex items-center gap-3 px-4 py-3 border-l-2 border-transparent font-mono text-xs uppercase tracking-[0.15em] text-muted-foreground/60 cursor-not-allowed w-full">
+              <Settings className="w-4 h-4" />
               Settings
             </button>
           </div>
         </nav>
 
-        <div className="p-4 border-t border-slate-800 flex items-center gap-3">
+        <div className="p-4 border-t border-border flex items-center gap-3">
           <UserButton />
           <button
             onClick={handleLogOut}
-            className="flex items-center gap-2 text-slate-400 hover:text-white transition-colors text-sm"
+            className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.15em] text-muted-foreground hover:text-foreground transition-colors"
           >
             <LogOut className="w-4 h-4" />
             Log Out
@@ -368,11 +368,13 @@ export default function DashboardPage() {
 
       {/* ── Main content ── */}
       <main className="flex-1 overflow-auto">
-        <div className="max-w-4xl mx-auto px-4 md:px-8 py-8 md:py-12">
-          <div className="mb-6 md:mb-8">
-            <h1 className="text-2xl md:text-4xl font-bold mb-2">Drop Your Resume.<br /><span className="gradient-text">Get Roasted.</span></h1>
-            <p className="text-slate-400 text-base md:text-lg">
-              Tier S to F &nbsp;·&nbsp; Brutal AI roast &nbsp;·&nbsp; Shareable card. Free.
+        <div className="max-w-4xl mx-auto px-4 md:px-8 py-10 md:py-14">
+          <div className="mb-8 md:mb-10">
+            <h1 className="font-display uppercase text-4xl md:text-5xl leading-[0.95] tracking-tight mb-3">
+              Drop your resume.<br /><span className="text-gold">Get roasted.</span>
+            </h1>
+            <p className="font-mono text-[11px] uppercase tracking-[0.15em] text-muted-foreground">
+              Tier S to F &middot; Brutal AI roast &middot; Shareable card &middot; Free
             </p>
           </div>
 
@@ -380,10 +382,10 @@ export default function DashboardPage() {
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
-            className={`relative border-2 border-dashed rounded-2xl p-8 md:p-12 transition-all ${
+            className={`relative border border-dashed p-8 md:p-14 transition-colors duration-300 ${
               isDragging
-                ? 'border-purple-500 bg-purple-500/5'
-                : 'border-slate-700 hover:border-slate-600'
+                ? 'border-gold bg-gold/5'
+                : 'border-border hover:border-gold/40'
             }`}
           >
             <input
@@ -400,23 +402,25 @@ export default function DashboardPage() {
                 htmlFor="resume-upload"
                 className="flex flex-col items-center justify-center cursor-pointer"
               >
-                <div className="w-14 h-14 md:w-16 md:h-16 rounded-full bg-purple-500/10 border border-purple-500/20 flex items-center justify-center mb-4">
-                  <Upload className="w-7 h-7 md:w-8 md:h-8 text-purple-400" />
+                <div className="w-14 h-14 md:w-16 md:h-16 rounded-full bg-gold/10 border border-gold/25 flex items-center justify-center mb-5">
+                  <Upload className="w-6 h-6 md:w-7 md:h-7 text-gold" />
                 </div>
-                <h3 className="text-base md:text-xl font-semibold mb-2 text-center">
+                <h3 className="font-display uppercase text-xl md:text-2xl tracking-tight mb-2 text-center">
                   Drop your resume and find out the truth
                 </h3>
-                <p className="text-slate-400 text-sm">PDF only &nbsp;·&nbsp; Max 10MB &nbsp;·&nbsp; IT industry</p>
+                <p className="font-mono text-[11px] uppercase tracking-[0.15em] text-muted-foreground">
+                  PDF only &middot; Max 10MB &middot; IT industry
+                </p>
               </label>
             ) : (
-              <div className="flex items-center justify-between bg-slate-800/50 rounded-lg p-4 border border-slate-700">
+              <div className="flex items-center justify-between bg-card border border-border p-4">
                 <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-10 h-10 rounded-lg bg-purple-500/10 border border-purple-500/20 flex items-center justify-center flex-shrink-0">
-                    <FileText className="w-5 h-5 text-purple-400" />
+                  <div className="w-10 h-10 bg-gold/10 border border-gold/25 flex items-center justify-center flex-shrink-0">
+                    <FileText className="w-5 h-5 text-gold" />
                   </div>
                   <div className="min-w-0">
                     <p className="font-medium truncate">{uploadedFile.name}</p>
-                    <p className="text-sm text-slate-400">
+                    <p className="font-mono text-[11px] text-muted-foreground">
                       {(uploadedFile.size / 1024).toFixed(1)} KB
                     </p>
                   </div>
@@ -424,9 +428,9 @@ export default function DashboardPage() {
                 {status !== 'analyzing' && (
                   <button
                     onClick={() => { setUploadedFile(null); setStatus('idle'); setExtractedPreview(null); }}
-                    className="w-8 h-8 rounded-full hover:bg-slate-700 flex items-center justify-center transition-colors flex-shrink-0 ml-2"
+                    className="w-8 h-8 hover:bg-background flex items-center justify-center transition-colors flex-shrink-0 ml-2"
                   >
-                    <X className="w-5 h-5 text-slate-400" />
+                    <X className="w-5 h-5 text-muted-foreground" />
                   </button>
                 )}
               </div>
@@ -438,10 +442,10 @@ export default function DashboardPage() {
           )}
 
           {extractedPreview && (
-            <div className="mt-4 p-4 bg-green-500/10 border border-green-500/30 rounded-xl">
+            <div className="mt-4 p-4 bg-green-500/5 border border-green-500/25">
               <p className="text-sm font-semibold text-green-400 mb-2">✓ Resume text extracted — AI scoring coming shortly</p>
-              <p className="text-xs text-slate-400 whitespace-pre-wrap line-clamp-4">{extractedPreview}</p>
-              <p className="text-xs text-slate-500 mt-2">This is a preview of the extracted text. Full analysis will appear here once AI is enabled.</p>
+              <p className="text-xs text-foreground/60 whitespace-pre-wrap line-clamp-4">{extractedPreview}</p>
+              <p className="text-xs text-muted-foreground mt-2">This is a preview of the extracted text. Full analysis will appear here once AI is enabled.</p>
             </div>
           )}
 
@@ -450,57 +454,50 @@ export default function DashboardPage() {
                without having to pick a new file). The Analyze button is NEVER
                shown while `done` — that was the bug causing the stale re-click. */}
           {uploadedFile && status === 'idle' && (
-            <button
-              onClick={() => startAnalysis(uploadedFile)}
-              className="w-full mt-6 py-4 rounded-lg gradient-purple text-white font-semibold text-lg hover:opacity-90 transition-opacity shadow-lg shadow-purple-500/30 flex items-center justify-center gap-3"
-            >
-              <Flame className="w-5 h-5" />
+            <Button size="lg" className="w-full mt-6" onClick={() => startAnalysis(uploadedFile)}>
+              <Flame className="w-4 h-4" />
               Roast My Resume
-            </button>
+            </Button>
           )}
 
           {status === 'analyzing' && (
-            <button
-              disabled
-              className="w-full mt-6 py-4 rounded-lg gradient-purple text-white font-semibold text-lg opacity-60 cursor-not-allowed flex items-center justify-center gap-3"
-            >
-              <Loader className="w-5 h-5 animate-spin" />
+            <Button size="lg" className="w-full mt-6" disabled>
+              <Loader className="w-4 h-4 animate-spin" />
               Roasting your resume...
-            </button>
+            </Button>
           )}
 
           {uploadedFile && status === 'done' && (
-            <button
-              onClick={() => setStatus('idle')}
-              className="w-full mt-6 py-4 rounded-lg border border-purple-500/40 text-purple-400 font-semibold text-lg hover:bg-purple-500/10 transition-colors flex items-center justify-center gap-3"
-            >
+            <Button size="lg" variant="outline" className="w-full mt-6" onClick={() => setStatus('idle')}>
               Analyze Again
-            </button>
+            </Button>
           )}
 
           {status === 'analyzing' && (
-            <p className="text-center text-slate-400 text-sm mt-3">
+            <p className="text-center font-mono text-[11px] uppercase tracking-[0.15em] text-muted-foreground mt-4">
               Running the roast — brutal honesty incoming. Usually under 10 seconds.
             </p>
           )}
 
-          <div className="mt-8 md:mt-12 grid md:grid-cols-2 gap-4 md:gap-6">
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 md:p-6">
-              <div className="w-12 h-12 rounded-lg bg-purple-500/10 border border-purple-500/20 flex items-center justify-center mb-4">
-                <Trophy className="w-6 h-6 text-yellow-400" />
+          <div className="mt-10 md:mt-14 grid md:grid-cols-2 gap-px bg-border border border-border">
+            <div className="bg-background p-6 md:p-7">
+              <div className="flex items-center justify-between mb-4">
+                <Trophy className="w-5 h-5 text-gold" />
+                <span className="font-mono text-[11px] text-muted-foreground tracking-[0.2em]">01</span>
               </div>
-              <h3 className="text-lg font-semibold mb-2">Tier S — F</h3>
-              <p className="text-slate-400 text-sm">
+              <h3 className="font-display uppercase text-2xl tracking-tight mb-2">Tier S — F</h3>
+              <p className="text-foreground/60 text-sm leading-relaxed">
                 You get a grade. S is elite. F means rebuild. No participation trophies.
               </p>
             </div>
 
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 md:p-6">
-              <div className="w-12 h-12 rounded-lg bg-purple-500/10 border border-purple-500/20 flex items-center justify-center mb-4">
-                <Flame className="w-6 h-6 text-orange-400" />
+            <div className="bg-background p-6 md:p-7">
+              <div className="flex items-center justify-between mb-4">
+                <Flame className="w-5 h-5 text-gold" />
+                <span className="font-mono text-[11px] text-muted-foreground tracking-[0.2em]">02</span>
               </div>
-              <h3 className="text-lg font-semibold mb-2">Share the Burn</h3>
-              <p className="text-slate-400 text-sm">
+              <h3 className="font-display uppercase text-2xl tracking-tight mb-2">Share the Burn</h3>
+              <p className="text-foreground/60 text-sm leading-relaxed">
                 Get a shareable card for Reels. Post your tier. Let them judge.
               </p>
             </div>
@@ -510,10 +507,10 @@ export default function DashboardPage() {
 
       {/* ── Claim purchase banner (shown when returning from Whop with mismatched email) ── */}
       {showClaimBanner && isSignedIn && !hasFullAccess && !claimSuccess && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 w-full max-w-md mx-4">
-          <div className="bg-slate-900 border border-yellow-500/40 rounded-2xl p-5 shadow-2xl">
-            <p className="text-yellow-300 text-sm font-semibold mb-1">Didn&apos;t get access after purchase?</p>
-            <p className="text-slate-400 text-xs mb-3">
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 w-full max-w-md px-4">
+          <div className="bg-card border border-gold/40 p-5 shadow-2xl">
+            <p className="text-gold text-sm font-semibold mb-1">Didn&apos;t get access after purchase?</p>
+            <p className="text-foreground/60 text-xs mb-3">
               If you paid with a different email, enter it below to claim your access.
             </p>
             <div className="flex gap-2">
@@ -522,12 +519,12 @@ export default function DashboardPage() {
                 value={claimEmail}
                 onChange={e => { setClaimEmail(e.target.value); setClaimError(null); }}
                 placeholder="Email used at Whop checkout"
-                className="flex-1 rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-yellow-500/40"
+                className="flex-1 bg-background border border-border px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-gold/60 transition-colors"
               />
               <button
                 onClick={handleClaim}
                 disabled={claimLoading || claimEmail.trim().length < 5}
-                className="px-4 py-2 rounded-lg bg-yellow-500 hover:bg-yellow-400 text-slate-900 font-semibold text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                className="px-4 py-2 bg-gold hover:bg-gold/90 text-background font-mono text-xs uppercase tracking-[0.15em] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {claimLoading ? '...' : 'Claim'}
               </button>
@@ -535,7 +532,7 @@ export default function DashboardPage() {
             {claimError && <p className="mt-2 text-red-400 text-xs">{claimError}</p>}
             <button
               onClick={() => setShowClaimBanner(false)}
-              className="mt-2 text-slate-500 hover:text-slate-400 text-xs transition-colors"
+              className="mt-2 font-mono text-[11px] uppercase tracking-[0.1em] text-muted-foreground hover:text-foreground transition-colors"
             >
               Dismiss
             </button>
@@ -546,16 +543,16 @@ export default function DashboardPage() {
       {/* ── Sign-in gate modal ── */}
       {showSignInGate && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
-          <div className="bg-slate-900 border border-slate-700 rounded-2xl p-8 max-w-sm w-full mx-4 text-center shadow-2xl">
-            <div className="text-4xl mb-4">🔥</div>
-            <h2 className="text-xl font-bold text-white mb-2">Sign in to continue</h2>
-            <p className="text-slate-400 text-sm mb-6">
+          <div className="bg-card border border-border p-8 max-w-sm w-full mx-4 text-center shadow-2xl">
+            <Flame className="w-8 h-8 text-gold mx-auto mb-4" />
+            <h2 className="font-display uppercase text-2xl tracking-tight mb-2">Sign in to continue</h2>
+            <p className="text-foreground/60 text-sm mb-6">
               You&apos;ve used your free parse. Sign in with Google to get 4 more free parses.
             </p>
             <SignIn routing="hash" />
             <button
               onClick={() => setShowSignInGate(false)}
-              className="mt-4 text-slate-500 hover:text-slate-300 text-sm transition-colors"
+              className="mt-4 font-mono text-[11px] uppercase tracking-[0.15em] text-muted-foreground hover:text-foreground transition-colors"
             >
               Cancel
             </button>
@@ -566,25 +563,25 @@ export default function DashboardPage() {
       {/* ── Paywall modal ── */}
       {showPaywallGate && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
-          <div className="bg-slate-900 border border-slate-700 rounded-2xl p-8 max-w-sm w-full mx-4 text-center shadow-2xl">
-            <div className="text-4xl mb-4">💳</div>
-            <h2 className="text-xl font-bold text-white mb-2">You&apos;re out of parses</h2>
-            <p className="text-slate-400 text-sm mb-6">
-              Get <span className="text-white font-semibold">unlimited parses + cover letter</span> for <span className="text-white font-semibold">$4.99</span>. One-time, no subscription.
+          <div className="bg-card border border-border p-8 max-w-sm w-full mx-4 text-center shadow-2xl">
+            <span className="font-display text-4xl text-gold block mb-4">$4.99</span>
+            <h2 className="font-display uppercase text-2xl tracking-tight mb-2">You&apos;re out of parses</h2>
+            <p className="text-foreground/60 text-sm mb-6">
+              Get <span className="text-foreground font-semibold">unlimited parses + cover letter</span> for <span className="text-gold font-semibold">$4.99</span>. One-time, no subscription.
             </p>
-            <button
+            <Button
+              className="w-full mb-3"
               onClick={() => {
                 const base = process.env.NEXT_PUBLIC_WHOP_CHECKOUT_URL ?? '';
                 const redirect = encodeURIComponent(window.location.origin + '/dashboard?unlocked=true');
                 window.location.href = `${base}?redirect=${redirect}`;
               }}
-              className="w-full py-3 px-6 bg-purple-600 hover:bg-purple-500 text-white font-semibold rounded-xl transition-colors mb-3"
             >
               Unlock everything — $4.99
-            </button>
+            </Button>
             <button
               onClick={() => setShowPaywallGate(false)}
-              className="text-slate-500 hover:text-slate-300 text-sm transition-colors"
+              className="font-mono text-[11px] uppercase tracking-[0.15em] text-muted-foreground hover:text-foreground transition-colors"
             >
               Cancel
             </button>

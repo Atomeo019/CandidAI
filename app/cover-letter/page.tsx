@@ -4,7 +4,6 @@ import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@clerk/nextjs';
 import {
-  Sparkles,
   ArrowLeft,
   Copy,
   Check,
@@ -12,6 +11,7 @@ import {
   FileText,
   Lock,
   AlertCircle,
+  Flame,
 } from 'lucide-react';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -43,14 +43,14 @@ function ParagraphCard({
   };
 
   return (
-    <div className="bg-slate-900 border border-slate-700 rounded-2xl overflow-hidden">
-      <div className="flex items-center justify-between px-5 py-3 border-b border-slate-700/60 bg-slate-800/40">
-        <span className="text-xs font-semibold text-slate-400 uppercase tracking-widest">
-          {index + 1} · {label}
+    <div className="bg-card border border-border overflow-hidden">
+      <div className="flex items-center justify-between px-5 py-3 border-b border-border bg-background/60">
+        <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
+          {String(index + 1).padStart(2, '0')} &middot; {label}
         </span>
         <button
           onClick={copy}
-          className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white transition-colors"
+          className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.15em] text-muted-foreground hover:text-foreground transition-colors"
         >
           {copied ? (
             <>
@@ -65,7 +65,7 @@ function ParagraphCard({
           )}
         </button>
       </div>
-      <p className="px-5 py-4 text-slate-200 text-sm leading-relaxed">{text}</p>
+      <p className="px-5 py-4 text-foreground/80 text-sm leading-relaxed">{text}</p>
     </div>
   );
 }
@@ -160,26 +160,26 @@ export default function CoverLetterPage() {
 
   if (status === 'checking' || !isLoaded) {
     return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
-        <Loader2 className="w-10 h-10 text-purple-400 animate-spin" />
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <Loader2 className="w-10 h-10 text-gold animate-spin" />
       </div>
     );
   }
 
   if (status === 'gate') {
     return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center px-6">
+      <div className="min-h-screen bg-background text-foreground flex items-center justify-center px-6">
         <div className="text-center max-w-sm">
-          <div className="w-16 h-16 rounded-full bg-purple-500/10 border border-purple-500/20 flex items-center justify-center mx-auto mb-6">
-            <Lock className="w-8 h-8 text-purple-400" />
+          <div className="w-16 h-16 rounded-full bg-gold/10 border border-gold/25 flex items-center justify-center mx-auto mb-6">
+            <Lock className="w-8 h-8 text-gold" />
           </div>
-          <h2 className="text-2xl font-bold mb-3">Access Required</h2>
-          <p className="text-slate-400 mb-6 text-sm leading-relaxed">
-            Unlimited parses + full cover letters unlock for <span className="text-white font-semibold">$4.99</span> — one-time, no subscription.
+          <h2 className="font-display uppercase text-3xl tracking-tight mb-3">Access Required</h2>
+          <p className="text-foreground/60 mb-8 text-sm leading-relaxed">
+            Unlimited parses + full cover letters unlock for <span className="text-gold font-semibold">$4.99</span> — one-time, no subscription.
           </p>
           <button
             onClick={() => router.push('/dashboard')}
-            className="px-6 py-3 rounded-lg gradient-purple text-white font-semibold hover:opacity-90 transition-opacity"
+            className="h-11 px-6 bg-gold text-background font-mono text-xs uppercase tracking-[0.15em] hover:bg-gold/90 transition-colors"
           >
             Back to Dashboard
           </button>
@@ -190,16 +190,16 @@ export default function CoverLetterPage() {
 
   if (status === 'error') {
     return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center px-6">
+      <div className="min-h-screen bg-background text-foreground flex items-center justify-center px-6">
         <div className="text-center max-w-md">
-          <div className="w-16 h-16 rounded-full bg-red-500/10 border border-red-500/20 flex items-center justify-center mx-auto mb-6">
+          <div className="w-16 h-16 rounded-full bg-red-500/10 border border-red-500/25 flex items-center justify-center mx-auto mb-6">
             <AlertCircle className="w-8 h-8 text-red-400" />
           </div>
-          <h2 className="text-2xl font-bold mb-3">Generation Failed</h2>
-          <p className="text-slate-400 mb-6 text-sm">{errorMsg}</p>
+          <h2 className="font-display uppercase text-3xl tracking-tight mb-3">Generation Failed</h2>
+          <p className="text-foreground/60 mb-8 text-sm">{errorMsg}</p>
           <button
             onClick={() => router.back()}
-            className="px-6 py-3 rounded-lg gradient-purple text-white font-semibold hover:opacity-90 transition-opacity"
+            className="h-11 px-6 bg-gold text-background font-mono text-xs uppercase tracking-[0.15em] hover:bg-gold/90 transition-colors"
           >
             Go Back
           </button>
@@ -210,11 +210,11 @@ export default function CoverLetterPage() {
 
   if (status === 'generating') {
     return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+      <div className="min-h-screen bg-background text-foreground flex items-center justify-center">
         <div className="text-center">
-          <Loader2 className="w-14 h-14 text-purple-400 animate-spin mx-auto mb-5" />
-          <h2 className="text-xl font-bold mb-2">Writing your cover letter…</h2>
-          <p className="text-slate-400 text-sm">Usually under 10 seconds. No filler. No flattery.</p>
+          <Loader2 className="w-14 h-14 text-gold animate-spin mx-auto mb-5" />
+          <h2 className="font-display uppercase text-2xl tracking-tight mb-2">Writing your cover letter…</h2>
+          <p className="font-mono text-[11px] uppercase tracking-[0.15em] text-muted-foreground">Usually under 10 seconds. No filler. No flattery.</p>
         </div>
       </div>
     );
@@ -223,42 +223,42 @@ export default function CoverLetterPage() {
   // ── Done ──────────────────────────────────────────────────────────────────────
 
   return (
-    <div className="min-h-screen bg-slate-950">
+    <div className="min-h-screen bg-background text-foreground">
 
       {/* Nav */}
-      <nav className="border-b border-slate-800">
-        <div className="max-w-4xl mx-auto px-6 py-4 flex items-center justify-between">
+      <nav className="border-b border-border sticky top-0 bg-background/85 backdrop-blur-md z-40">
+        <div className="max-w-4xl mx-auto px-6 h-16 flex items-center justify-between">
           <button
             onClick={() => router.back()}
-            className="flex items-center gap-2 text-slate-400 hover:text-white transition-colors"
+            className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.15em] text-muted-foreground hover:text-foreground transition-colors"
           >
-            <ArrowLeft className="w-5 h-5" />
+            <ArrowLeft className="w-4 h-4" />
             Back to Results
           </button>
           <div className="flex items-center gap-2">
-            <Sparkles className="w-7 h-7 text-purple-500" />
-            <span className="text-xl font-bold gradient-text">CandidAI</span>
+            <Flame className="w-5 h-5 text-gold" />
+            <span className="font-display text-2xl uppercase tracking-wide leading-none pt-0.5">CandidAI</span>
           </div>
         </div>
       </nav>
 
-      <main className="max-w-4xl mx-auto px-4 md:px-6 py-8 md:py-12 space-y-6">
+      <main className="max-w-4xl mx-auto px-4 md:px-6 py-10 md:py-14 space-y-6">
 
         {/* Header */}
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <div className="flex items-center gap-2 mb-2">
-              <FileText className="w-6 h-6 text-purple-400" />
-              <h1 className="text-2xl md:text-3xl font-bold">Your Cover Letter</h1>
+            <div className="flex items-center gap-2.5 mb-2">
+              <FileText className="w-5 h-5 text-gold" />
+              <h1 className="font-display uppercase text-3xl md:text-4xl tracking-tight">Your Cover Letter</h1>
             </div>
-            <p className="text-slate-400 text-sm">
+            <p className="text-foreground/60 text-sm">
               3 tight paragraphs, ruthlessly tailored to the job description.
             </p>
           </div>
 
           <button
             onClick={copyAll}
-            className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-sm font-semibold transition-colors"
+            className="flex items-center gap-2 h-11 px-5 bg-gold text-background font-mono text-xs uppercase tracking-[0.15em] hover:bg-gold/90 transition-colors"
           >
             {copiedAll ? (
               <>
@@ -284,9 +284,9 @@ export default function CoverLetterPage() {
         )}
 
         {/* Footer tip */}
-        <div className="bg-slate-900/60 border border-slate-700/40 rounded-xl px-5 py-4">
-          <p className="text-slate-400 text-xs leading-relaxed">
-            <span className="text-slate-300 font-medium">Pro tip:</span> This letter was written for the specific JD you pasted. Swap in a new JD on the results page to generate a fresh version for another role — each analysis is independent.
+        <div className="bg-card border border-border px-5 py-4">
+          <p className="text-foreground/60 text-xs leading-relaxed">
+            <span className="text-gold font-medium">Pro tip:</span> This letter was written for the specific JD you pasted. Swap in a new JD on the results page to generate a fresh version for another role — each analysis is independent.
           </p>
         </div>
 
