@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { Flame, ArrowRight, Trophy, Share2, Check, Quote, ArrowDown } from 'lucide-react';
+import { FREE_PARSE_LIMIT, FREE_PARSE_COPY } from '@/lib/constants';
 import { Button } from '@/components/brand/Button';
 import { Card } from '@/components/brand/Card';
 import { TierBadge, type Tier } from '@/components/brand/TierBadge';
@@ -256,7 +257,7 @@ export default function LandingPage() {
                 className="hero-enter mt-8 font-mono text-[11px] uppercase tracking-[0.15em] text-muted-foreground/70"
                 style={{ animationDelay: '600ms' }}
               >
-                3 free analyses &middot; No card &middot; Resumes never stored
+                {FREE_PARSE_COPY} &middot; No card &middot; Resumes never stored
               </p>
             </div>
           </div>
@@ -349,7 +350,7 @@ export default function LandingPage() {
                     <ul className="space-y-3 mb-8 flex-1">
                       <li className="flex items-start gap-2.5 text-sm text-foreground/60">
                         <Check className="w-4 h-4 text-gold flex-shrink-0 mt-0.5" />
-                        3 free resume analyses
+                        {FREE_PARSE_LIMIT} free resume analyses
                       </li>
                       <li className="flex items-start gap-2.5 text-sm text-foreground/60">
                         <Check className="w-4 h-4 text-gold flex-shrink-0 mt-0.5" />

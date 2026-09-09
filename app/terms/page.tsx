@@ -17,7 +17,7 @@ export default function TermsPage() {
 
       <LegalSection title="Your account">
         <ul className="list-disc list-inside space-y-2">
-          <li>You must sign in with Google to access more than one free analysis.</li>
+          <li>You must be signed in to run any analysis. New accounts get three free analyses.</li>
           <li>You are responsible for keeping your account secure.</li>
           <li>One account per person. Do not share accounts.</li>
         </ul>

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { auth, currentUser } from '@clerk/nextjs/server'
 import { prisma } from '@/lib/db'
+import { FREE_PARSE_LIMIT } from '@/lib/constants'
 
 export async function GET() {
   const { userId } = await auth()
@@ -14,10 +15,12 @@ export async function GET() {
   // first signed-in parse is never wrongly blocked by a missing row.
   if (!user) {
     const clerkUser = await currentUser()
-    const email = clerkUser?.emailAddresses?.[0]?.emailAddress ?? ''
+    // Lowercased at the write site -- see the Whop webhook's case-sensitive
+    // lookup, which this is what used to silently miss.
+    const email = (clerkUser?.emailAddresses?.[0]?.emailAddress ?? '').toLowerCase().trim()
     user = await prisma.user.upsert({
       where: { id: userId },
-      create: { id: userId, email },
+      create: { id: userId, email, parseLimit: FREE_PARSE_LIMIT },
       update: {},
     })
   }

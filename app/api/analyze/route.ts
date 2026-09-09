@@ -1,14 +1,48 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@clerk/nextjs/server';
+import { auth, currentUser } from '@clerk/nextjs/server';
 import { prisma } from '@/lib/db';
 import type { ExtractionResponse, AnalysisResponse, ErrorResponse } from '@/lib/types';
 import { normalizeAnalysisResult } from '@/lib/normalize';
+import { FREE_PARSE_LIMIT } from '@/lib/constants';
+import { rateLimit } from '@/lib/rate-limit';
 
 // ── Feature flag ──────────────────────────────────────────────────────────────
 const AI_ENABLED    = true;
 const AI_CHAR_LIMIT = 6000;
 const PREVIEW_CHARS = 500;
-const GROQ_TIMEOUT  = 5500; // ms — Stage1(5.5s) + Stages2&3 parallel(2.5s) = 8s total, under Vercel 10s limit
+
+// ── Time budget ───────────────────────────────────────────────────────────────
+// Every stage below draws from ONE wall-clock budget rather than owning an
+// independent timeout. The old code gave pdfjs 6s, pdf-parse 5s, Groq 5.5s and
+// stages 2/3 2.5s as separate ceilings — a request that used them all ran ~19s
+// inside a 10s function and died as a Vercel HTML 504, which the client could
+// only report as a vague "timed out".
+//
+// TOTAL_BUDGET_MS must stay comfortably below `maxDuration` so there is room to
+// serialise the JSON response after the last stage returns. If you raise
+// maxDuration (check your Vercel plan's ceiling first — the build fails if you
+// exceed it), raise this with it; the per-stage reserves below are proportions
+// of the whole and need no edit.
+const MAX_DURATION_S  = 10;
+const TOTAL_BUDGET_MS = 9000;
+
+// Time each later stage needs reserved for it while an earlier stage runs.
+const RESERVE_FOR_AI_MS      = 5200; // extraction must leave this for Groq stages 1-3
+const RESERVE_FOR_ROAST_MS   = 2700; // Groq stage 1 must leave this for stages 2 and 3
+const GROQ_STAGE1_MAX_MS     = 5500;
+const GROQ_ROAST_MAX_MS      = 2500;
+const GROQ_STAGE1_FLOOR_MS   = 1200; // below this a Groq call cannot realistically finish
+const GROQ_ROAST_FLOOR_MS    =  800;
+const EXTRACT_PDFJS_MAX_MS   = 3000;
+const EXTRACT_PDFPARSE_MAX_MS = 2000;
+const EXTRACT_FLOOR_MS       =  500;
+
+// ── Rate limits ───────────────────────────────────────────────────────────────
+// Backstop only — the parse-credit gate below is the real control. This exists
+// so a scripted loop cannot burn credits (and Groq spend) faster than a human
+// could ever upload files.
+const ANALYZE_RATE_LIMIT  = 10;
+const ANALYZE_RATE_WINDOW = 60_000;
 
 // ── AI Prompt ─────────────────────────────────────────────────────────────────
 // Design principles:
@@ -154,7 +188,7 @@ const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js');
 if (pdfjsLib.GlobalWorkerOptions) pdfjsLib.GlobalWorkerOptions.workerSrc = '';
 
 export const runtime    = 'nodejs';
-export const maxDuration = 10;
+export const maxDuration = MAX_DURATION_S;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -207,7 +241,8 @@ const GROQ_MODELS: Array<{ model: string; maxTokens: number; resumeLimit: number
 
 async function callGroqWithModel(
   resumeText: string,
-  cfg: { model: string; maxTokens: number; resumeLimit: number }
+  cfg: { model: string; maxTokens: number; resumeLimit: number },
+  timeoutMs: number
 ): Promise<unknown> {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) throw new Error('GROQ_API_KEY is not set');
@@ -229,7 +264,7 @@ async function callGroqWithModel(
         ],
       }),
     }),
-    GROQ_TIMEOUT,
+    timeoutMs,
     `Groq API (${cfg.model})`
   );
 
@@ -249,20 +284,41 @@ async function callGroqWithModel(
   }
 }
 
-async function callGroq(resumeText: string): Promise<unknown> {
+// A failure worth trying the next model for. The previous rule only continued
+// on 429 and 413, which meant the two fallback models were effectively dead
+// code: a timeout — by far the most common failure — rethrew immediately and
+// the user got AI_FAILED while a faster 8b model sat unused. Anything transient
+// or model-specific now falls through; only failures that every model in the
+// chain would hit identically bail out early.
+function isRetryableGroqError(message: string): boolean {
+  if (/\b(400|401|403|404)\b/.test(message)) return false; // bad key / bad request — same for every model
+  return true;                                             // timeout, 429, 413, 5xx, network reset
+}
+
+async function callGroq(resumeText: string, budgetLeft: () => number): Promise<unknown> {
   let lastError: Error = new Error('No Groq models available');
+
   for (const cfg of GROQ_MODELS) {
+    // Each attempt is sized by what is actually left of the request budget, so
+    // a retry can never push the handler past its deadline.
+    const timeoutMs = Math.min(GROQ_STAGE1_MAX_MS, budgetLeft() - RESERVE_FOR_ROAST_MS);
+    if (timeoutMs < GROQ_STAGE1_FLOOR_MS) {
+      console.warn(`⚠️ Skipping Groq model ${cfg.model} — only ${budgetLeft()}ms of budget left`);
+      break;
+    }
+
     try {
-      const result = await callGroqWithModel(resumeText, cfg);
+      const result = await callGroqWithModel(resumeText, cfg, timeoutMs);
       if (cfg.model !== GROQ_MODELS[0].model) console.warn(`⚠️ Used fallback Groq model: ${cfg.model}`);
       return result;
     } catch (e: any) {
-      console.warn(`⚠️ Groq model ${cfg.model} failed: ${e?.message?.slice(0, 100)}`);
-      lastError = e;
-      // Retry on 429 (rate limit) or 413 (request too large — next model uses smaller config)
-      if (!e?.message?.includes('429') && !e?.message?.includes('413')) throw e;
+      const msg = e?.message ?? String(e);
+      console.warn(`⚠️ Groq model ${cfg.model} failed: ${msg.slice(0, 100)}`);
+      lastError = e instanceof Error ? e : new Error(msg);
+      if (!isRetryableGroqError(msg)) throw lastError;
     }
   }
+
   throw lastError;
 }
 
@@ -389,7 +445,7 @@ function selectTemplate(targets: string[]): RoastTemplate {
 // Input: roast_targets array from Stage 1 (specific verbatim resume facts).
 // Output: one savage sentence, max 150 chars. Returns null on any failure.
 
-async function callGroqRoast(targets: string[], selectedTemplate: string): Promise<string | null> {
+async function callGroqRoast(targets: string[], selectedTemplate: string, timeoutMs: number): Promise<string | null> {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey || targets.length === 0) return null;
 
@@ -437,7 +493,7 @@ RULES:
           ],
         }),
       }),
-      2500,
+      timeoutMs,
       'Groq Roast'
     );
 
@@ -464,7 +520,7 @@ RULES:
 // career-advice prose and violates the hard-ban list (e.g. "impressive",
 // "the candidate should"). Stage 3 fires in parallel with Stage 2 via
 // Promise.allSettled — zero added latency.
-async function callGroqRoastBody(targets: string[]): Promise<string | null> {
+async function callGroqRoastBody(targets: string[], timeoutMs: number): Promise<string | null> {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey || targets.length === 0) return null;
 
@@ -504,7 +560,7 @@ Output: 3 sentences. Period after each. No labels. No preamble. Nothing else.`,
           ],
         }),
       }),
-      2500,
+      timeoutMs,
       'Groq RoastBody'
     );
 
@@ -525,33 +581,77 @@ Output: 3 sentences. Period after each. No labels. No preamble. Nothing else.`,
 export async function POST(req: NextRequest) {
   const start = Date.now();
 
+  // Milliseconds still available before the function must have replied.
+  const budgetLeft = () => TOTAL_BUDGET_MS - (Date.now() - start);
+
+  // A credit is reserved atomically in step 3a so two concurrent uploads cannot
+  // both pass the gate. If the request then fails for a reason that is not the
+  // user's fault — unreadable PDF, Groq outage — the credit is handed back in
+  // the `finally` block. `refundCredit` starts false and is only set true once
+  // a credit has actually been taken.
+  let refundCredit = false;
+  let creditUserId: string | null = null;
+
   try {
     // ── 0. Server-side parse gate ─────────────────────────────────────────────
     // Require auth for all requests — anonymous callers could otherwise bypass
     // the client-side gate and burn Groq credits indefinitely.
-    // New users get 3 free parses on signup; no anonymous parse needed.
     const { userId } = await auth();
     if (!userId) {
       const body: ErrorResponse = {
         ok: false, mode: 'error',
-        error: 'Sign in to analyse your resume. New accounts get 3 free analyses.',
+        error: `Sign in to analyse your resume. New accounts get ${FREE_PARSE_LIMIT} free analyses.`,
         code: 'RATE_LIMITED',
       };
       return NextResponse.json(body, { status: 401 });
     }
 
-    // Check signed-in user parse limit
-    const dbUser = await prisma.user.findUnique({ where: { id: userId } });
-    if (dbUser) {
-      const fullAccess = Boolean((dbUser as Record<string, unknown>).hasFullAccess);
-      if (!fullAccess && dbUser.parseCount >= dbUser.parseLimit) {
-        const body: ErrorResponse = {
-          ok: false, mode: 'error',
-          error: 'You have used all your free parses. Upgrade to unlock unlimited.',
-          code: 'PARSE_LIMIT_EXCEEDED',
-        };
-        return NextResponse.json(body, { status: 403 });
-      }
+    // Backstop against scripted loops. Sits in front of the DB work so an
+    // abusive caller costs us a map lookup rather than a round trip.
+    const limit = rateLimit(`analyze:${userId}`, ANALYZE_RATE_LIMIT, ANALYZE_RATE_WINDOW);
+    if (!limit.ok) {
+      const body: ErrorResponse = {
+        ok: false, mode: 'error',
+        error: `Too many analyses in a short window. Try again in ${limit.retryAfter}s.`,
+        code: 'RATE_LIMITED',
+      };
+      return NextResponse.json(body, {
+        status: 429,
+        headers: { 'Retry-After': String(limit.retryAfter) },
+      });
+    }
+
+    // The row must exist before any gate runs. Previously the whole check sat
+    // inside `if (dbUser)`, so a user whose Clerk webhook had not landed yet —
+    // or who called this endpoint without ever loading the dashboard — had no
+    // row and therefore no limit at all. Missing row now means "create it and
+    // check", never "skip the check".
+    let dbUser = await prisma.user.findUnique({ where: { id: userId } });
+    if (!dbUser) {
+      const clerkUser = await currentUser();
+      // Lowercased at the write site: Postgres string equality is case-sensitive,
+      // so a stored "Name@Gmail.com" would never match an incoming lowercase
+      // lookup from the Whop webhook. See also pickPrimaryEmail in the Clerk webhook.
+      const email = (clerkUser?.emailAddresses?.[0]?.emailAddress ?? '').toLowerCase().trim();
+      dbUser = await prisma.user.upsert({
+        where:  { id: userId },
+        create: { id: userId, email, parseLimit: FREE_PARSE_LIMIT },
+        update: {},
+      });
+    }
+
+    // Fast path, for the user's benefit only: reject an exhausted account before
+    // making them wait on a 5 MB upload. This is NOT the enforcement point —
+    // two simultaneous requests can both pass it. The atomic reservation in
+    // step 3a is what actually holds the line.
+    const fullAccess = Boolean((dbUser as Record<string, unknown>).hasFullAccess);
+    if (!fullAccess && dbUser.parseCount >= dbUser.parseLimit) {
+      const body: ErrorResponse = {
+        ok: false, mode: 'error',
+        error: 'You have used all your free parses. Upgrade to unlock unlimited.',
+        code: 'PARSE_LIMIT_EXCEEDED',
+      };
+      return NextResponse.json(body, { status: 403 });
     }
 
     // ── 1. File ────────────────────────────────────────────────────────────────
@@ -565,7 +665,12 @@ export async function POST(req: NextRequest) {
 
     const bytes  = await file.arrayBuffer();
     const buffer = Buffer.from(bytes);
-    console.log(`📥 Received file: "${file.name}" — ${buffer.length} bytes`);
+    // Filename deliberately omitted. Resumes are routinely named things like
+    // "Firstname_Lastname_Resume_2026.pdf", and the privacy policy promises we
+    // do not retain resume content — a real name sitting in Vercel's log
+    // retention is a third-party system holding personal data we said we would
+    // not keep. Size and MIME type are all the diagnostics actually need.
+    console.log(`📥 Received file: ${buffer.length} bytes, type: ${file.type || 'unknown'}`);
 
     // Server-side file size guard (5 MB) — client validates too but API can be called directly
     const MAX_BYTES = 5 * 1024 * 1024;
@@ -595,6 +700,34 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(body, { status: 500 });
     }
 
+    // ── 3a. Reserve the parse credit ──────────────────────────────────────────
+    // THIS is the enforcement point. A single conditional UPDATE both checks the
+    // limit and consumes it, so there is no window between the two in which a
+    // second concurrent request can slip through. Raw SQL because Prisma cannot
+    // compare two columns of the same row inside a `where`.
+    //
+    // Placed after the cheap validations so a malformed upload never costs the
+    // user a credit, and before any Groq call so nothing expensive runs unpaid.
+    // `$executeRaw` returns the number of rows changed: 1 = taken, 0 = exhausted.
+    const reserved = await prisma.$executeRaw`
+      UPDATE "User"
+         SET "parseCount" = "parseCount" + 1
+       WHERE "id" = ${userId}
+         AND ("hasFullAccess" = true OR "parseCount" < "parseLimit")
+    `;
+
+    if (reserved === 0) {
+      const body: ErrorResponse = {
+        ok: false, mode: 'error',
+        error: 'You have used all your free parses. Upgrade to unlock unlimited.',
+        code: 'PARSE_LIMIT_EXCEEDED',
+      };
+      return NextResponse.json(body, { status: 403 });
+    }
+
+    refundCredit = true;
+    creditUserId = userId;
+
     // ── 4. Text extraction ────────────────────────────────────────────────────
     // Strategy (most reliable → least):
     //   1. pdfjs-dist  — page-by-page, handles multipage PDFs correctly
@@ -603,35 +736,51 @@ export async function POST(req: NextRequest) {
     let resumeText: string | null = null;
 
     // 4a. pdfjs-dist page-by-page extraction
-    try {
-      // new Uint8Array(buffer) copies elements → byteOffset is always 0, safe
-      const data        = new Uint8Array(buffer);
-      const loadingTask = pdfjsLib.getDocument({ data });
-      const pdf         = await withTimeout(loadingTask.promise as Promise<any>, 6000, 'pdfjs-load') as any;
-      const numPages: number = pdf.numPages as number;
-      console.log(`📄 pdfjs: ${numPages} page(s) detected`);
+    const pdfjsBudget = Math.min(EXTRACT_PDFJS_MAX_MS, budgetLeft() - RESERVE_FOR_AI_MS);
+    if (pdfjsBudget >= EXTRACT_FLOOR_MS) {
+      try {
+        // new Uint8Array(buffer) copies elements → byteOffset is always 0, safe
+        const data        = new Uint8Array(buffer);
+        // isEvalSupported: false is the documented mitigation for
+        // GHSA-wgrm-67xf-hhpq — pdfjs below 4.7.76 can be made to execute
+        // JavaScript embedded in a crafted PDF. We ingest PDFs from anyone on
+        // the internet, so this stays off regardless of the installed version.
+        const loadingTask = pdfjsLib.getDocument({ data, isEvalSupported: false });
+        const pdf         = await withTimeout(loadingTask.promise as Promise<any>, pdfjsBudget, 'pdfjs-load') as any;
+        const numPages: number = pdf.numPages as number;
+        console.log(`📄 pdfjs: ${numPages} page(s) detected`);
 
-      const pageTexts: string[] = [];
-      for (let i = 1; i <= numPages; i++) {
-        const page    = await (pdf.getPage(i) as Promise<any>);
-        const content = await (page.getTextContent() as Promise<any>);
-        const pageStr = (content.items as any[])
-          .map((item) => (typeof item.str === 'string' ? item.str : ''))
-          .join(' ');
-        pageTexts.push(pageStr);
+        const pageTexts: string[] = [];
+        for (let i = 1; i <= numPages; i++) {
+          // A 40-page PDF can outlast the budget even when each page is fast.
+          // Stop and use what we have rather than overrunning the function.
+          if (budgetLeft() < RESERVE_FOR_AI_MS) {
+            console.warn(`⚠️  pdfjs: stopped at page ${i - 1}/${numPages} — budget exhausted`);
+            break;
+          }
+          const page    = await (pdf.getPage(i) as Promise<any>);
+          const content = await (page.getTextContent() as Promise<any>);
+          const pageStr = (content.items as any[])
+            .map((item) => (typeof item.str === 'string' ? item.str : ''))
+            .join(' ');
+          pageTexts.push(pageStr);
+        }
+
+        const text = pageTexts.join('\n').replace(/\s+/g, ' ').trim();
+        console.log(`📄 pdfjs: ${text.length} chars from ${pageTexts.length} page(s)`);
+        if (text.length >= 20) resumeText = text;
+      } catch (e: any) {
+        console.warn(`⚠️  pdfjs-dist failed: ${e?.message ?? e}`);
       }
-
-      const text = pageTexts.join('\n').replace(/\s+/g, ' ').trim();
-      console.log(`📄 pdfjs: ${text.length} chars from ${numPages} page(s)`);
-      if (text.length >= 20) resumeText = text;
-    } catch (e: any) {
-      console.warn(`⚠️  pdfjs-dist failed: ${e?.message ?? e}`);
+    } else {
+      console.warn('⚠️  pdfjs skipped — insufficient budget');
     }
 
     // 4b. pdf-parse fallback — pass buffer directly (fixes the byteOffset bug)
-    if (!resumeText) {
+    const pdfParseBudget = Math.min(EXTRACT_PDFPARSE_MAX_MS, budgetLeft() - RESERVE_FOR_AI_MS);
+    if (!resumeText && pdfParseBudget >= EXTRACT_FLOOR_MS) {
       try {
-        const pdfData = await withTimeout(pdfParse(buffer), 5000, 'pdf-parse');
+        const pdfData = await withTimeout(pdfParse(buffer), pdfParseBudget, 'pdf-parse');
         const text    = (pdfData.text ?? '').trim();
         console.log(`📄 pdf-parse fallback: ${text.length} chars`);
         if (text.length >= 20) resumeText = text;
@@ -691,7 +840,7 @@ export async function POST(req: NextRequest) {
 
     let rawAIOutput: unknown;
     try {
-      rawAIOutput = await callGroq(textForAI);
+      rawAIOutput = await callGroq(textForAI, budgetLeft);
     } catch (e: any) {
       console.error(`❌ Groq failed: ${e?.message ?? e} [+${Date.now() - start}ms]`);
       const body: ErrorResponse = {
@@ -709,12 +858,15 @@ export async function POST(req: NextRequest) {
     const roastTargets: string[] = Array.isArray(rawTargets)
       ? rawTargets.filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
       : [];
-    if (roastTargets.length > 0) {
+    const roastBudget = Math.min(GROQ_ROAST_MAX_MS, budgetLeft() - 400);
+    if (roastTargets.length > 0 && roastBudget >= GROQ_ROAST_FLOOR_MS) {
       const { template: roastTemplate, category: roastCategory } = selectTemplate(roastTargets);
       // Run Stage 2 (headline) and Stage 3 (body) in parallel — no latency cost.
+      // Both are best-effort: if either fails or is skipped for budget, the
+      // Stage 1 headline and body already on `analysis` stand.
       const [headlineResult, bodyResult] = await Promise.allSettled([
-        callGroqRoast(roastTargets, roastTemplate),
-        callGroqRoastBody(roastTargets),
+        callGroqRoast(roastTargets, roastTemplate, roastBudget),
+        callGroqRoastBody(roastTargets, roastBudget),
       ]);
       if (headlineResult.status === 'fulfilled' && headlineResult.value) {
         analysis.roast_headline = headlineResult.value;
@@ -731,6 +883,37 @@ export async function POST(req: NextRequest) {
     }
 
     console.log(`✅ Analysis complete — score: ${analysis.final_score}, outcome: ${analysis.hiring_prediction.outcome} [+${Date.now() - start}ms]`);
+
+    // The analysis succeeded — the credit was legitimately spent.
+    refundCredit = false;
+
+    // Persist from the normalized server-side result. This used to be a POST
+    // the browser made to /api/analyses with whatever JSON it liked, which
+    // meant anyone could write themselves a perfect score. Never resume text —
+    // see the comment on the Analysis model in schema.prisma.
+    //
+    // Best-effort: a history write must never turn a successful analysis into
+    // an error for the user.
+    try {
+      await prisma.analysis.create({
+        data: {
+          userId,
+          detectedRole:     analysis.detected_role      ?? null,
+          tier:             analysis.tier               ?? null,
+          contentScore:     analysis.content_score      ?? null,
+          atsScore:         analysis.ats_score          ?? null,
+          roastHeadline:    analysis.roast_headline     ?? null,
+          roastBody:        analysis.roast_body         ?? null,
+          dimensionScores:  (analysis.dimension_scores  ?? null) as any,
+          hiringPrediction: (analysis.hiring_prediction ?? null) as any,
+          redFlags:         (analysis.red_flags         ?? null) as any,
+          strengths:        (analysis.strengths         ?? null) as any,
+          topPriority:      analysis.top_priority       ?? null,
+        },
+      });
+    } catch (err: any) {
+      console.error('⚠️  Failed to save analysis history:', err?.message ?? err);
+    }
 
     const successBody: AnalysisResponse = {
       ok: true, mode: 'analysis',
@@ -750,5 +933,26 @@ export async function POST(req: NextRequest) {
       code: 'SERVER_ERROR',
     };
     return NextResponse.json(body, { status: 500 });
+
+  } finally {
+    // Hand the credit back on every path that did not produce an analysis:
+    // unreadable PDF, encrypted PDF, Groq outage, unhandled throw. Charging
+    // someone a parse for our failure is the fastest way to a refund request.
+    //
+    // GREATEST(...,0) guards against a concurrent reset ever driving the count
+    // negative. Errors here are swallowed — a failed refund must not replace
+    // the response the user is already getting.
+    if (refundCredit && creditUserId) {
+      try {
+        await prisma.$executeRaw`
+          UPDATE "User"
+             SET "parseCount" = GREATEST("parseCount" - 1, 0)
+           WHERE "id" = ${creditUserId}
+        `;
+        console.log(`↩️  Refunded parse credit to ${creditUserId} — analysis did not complete`);
+      } catch (err: any) {
+        console.error('⚠️  Credit refund failed:', err?.message ?? err);
+      }
+    }
   }
 }

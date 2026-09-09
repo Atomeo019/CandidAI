@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@clerk/nextjs';
 import {
@@ -21,6 +21,14 @@ interface Paragraphs {
   body:  string;
   close: string;
 }
+
+// How long to keep re-checking for full access after returning from checkout.
+// Whop's webhook routinely lands a few seconds after the browser redirect, so a
+// single check on mount showed paying customers the paywall as the NORMAL case.
+const ACCESS_POLL_TIMEOUT_MS  = 25_000;
+const ACCESS_POLL_INTERVAL_MS = 2_000;
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 // ── Paragraph card ─────────────────────────────────────────────────────────────
 
@@ -76,34 +84,77 @@ export default function CoverLetterPage() {
   const router = useRouter();
   const { isSignedIn, isLoaded } = useAuth();
 
-  const [status, setStatus]         = useState<'checking' | 'generating' | 'done' | 'error' | 'gate'>('checking');
+  const [status, setStatus]         = useState<'checking' | 'confirming' | 'generating' | 'done' | 'error' | 'gate'>('checking');
   const [paragraphs, setParagraphs] = useState<Paragraphs | null>(null);
   const [fullText, setFullText]     = useState('');
   const [errorMsg, setErrorMsg]     = useState('');
   const [copiedAll, setCopiedAll]   = useState(false);
 
+  // The JD and analysis are kept in state for the lifetime of the page so a
+  // failed generation can be retried. sessionStorage used to be cleared BEFORE
+  // generating, which meant one Groq timeout left a paying customer with an
+  // error screen, an empty form behind it, and nothing to retry with.
+  const jdRef       = useRef<string>('');
+  const analysisRef = useRef<object | null>(null);
+  const [canRetry, setCanRetry] = useState(false);
+
+  // Post-checkout recovery
+  const [justPaid, setJustPaid]         = useState(false);
+  const [claimEmail, setClaimEmail]     = useState('');
+  const [claimLoading, setClaimLoading] = useState(false);
+  const [claimError, setClaimError]     = useState<string | null>(null);
+
   const generate = useCallback(async (jd: string, analysis: object) => {
     setStatus('generating');
+    setCanRetry(false);
     try {
       const res = await fetch('/api/apply-full', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ jd, analysis }),
       });
+
+      // A 504 or CDN error page is HTML, not JSON — parsing it would throw a
+      // SyntaxError and surface as the wrong message.
+      const contentType = res.headers.get('content-type') ?? '';
+      if (!contentType.includes('application/json')) {
+        setErrorMsg('The server took too long to respond. Your access is safe — try again.');
+        setCanRetry(true);
+        setStatus('error');
+        return;
+      }
+
       const data = await res.json();
       if (data.ok) {
         setParagraphs(data.paragraphs);
         setFullText(data.cover_letter);
+        // Clear only now that the letter exists. A back-navigation re-runs the
+        // mount effect, finds nothing stored, and bounces to the dashboard —
+        // the same behaviour as before, without the data loss on failure.
+        try {
+          sessionStorage.removeItem('cl_jd');
+          sessionStorage.removeItem('cl_analysis');
+        } catch { /* private browsing — nothing to clear */ }
         setStatus('done');
       } else {
         setErrorMsg(data.error ?? 'Generation failed. Please try again.');
+        setCanRetry(true);
         setStatus('error');
       }
     } catch {
-      setErrorMsg('Network error. Please try again.');
+      setErrorMsg('Network error. Your access is safe — try again.');
+      setCanRetry(true);
       setStatus('error');
     }
   }, []);
+
+  const retry = useCallback(() => {
+    if (!analysisRef.current) {
+      router.replace('/dashboard');
+      return;
+    }
+    generate(jdRef.current, analysisRef.current);
+  }, [generate, router]);
 
   useEffect(() => {
     if (!isLoaded) return;
@@ -114,40 +165,106 @@ export default function CoverLetterPage() {
       return;
     }
 
-    // Check paid status
-    fetch('/api/user/usage')
-      .then(r => r.json())
-      .then(d => {
-        if (!d.hasFullAccess) {
-          setStatus('gate');
-          return;
+    const paid = typeof window !== 'undefined'
+      && new URLSearchParams(window.location.search).get('unlocked') === 'true';
+    setJustPaid(paid);
+
+    // Read the JD + analysis stored by the results page. Read only — nothing is
+    // removed until a letter has actually been produced.
+    let storedJd = '';
+    let rawAnalysis = '';
+    try {
+      storedJd    = sessionStorage.getItem('cl_jd') ?? '';
+      rawAnalysis = sessionStorage.getItem('cl_analysis') ?? '';
+    } catch { /* private browsing */ }
+
+    if (!storedJd || !rawAnalysis) {
+      // Nothing to generate from. If they have just paid, send them to the
+      // dashboard with the flag still set so the claim banner is there.
+      router.replace(paid ? '/dashboard?unlocked=true' : '/dashboard');
+      return;
+    }
+
+    let analysis: object;
+    try {
+      analysis = JSON.parse(rawAnalysis);
+    } catch {
+      router.replace('/dashboard');
+      return;
+    }
+
+    jdRef.current       = storedJd;
+    analysisRef.current = analysis;
+
+    let cancelled = false;
+
+    (async () => {
+      // Poll for access. Someone arriving from checkout gets the full window;
+      // anyone else gets a single check, because for them a false answer is the
+      // truth rather than a race with the webhook.
+      const deadline = Date.now() + (paid ? ACCESS_POLL_TIMEOUT_MS : 0);
+      let granted = false;
+      let announced = false;
+
+      while (!cancelled) {
+        try {
+          const res  = await fetch('/api/user/usage');
+          const data = await res.json();
+          if (data.hasFullAccess) { granted = true; break; }
+        } catch {
+          if (!paid) {
+            if (!cancelled) {
+              setErrorMsg('Could not verify your access. Please try again.');
+              setCanRetry(false);
+              setStatus('error');
+            }
+            return;
+          }
+          // Just paid — a transient network blip should not cost them the
+          // purchase. Keep trying until the deadline.
         }
 
-        // Read JD + analysis stored by results page before redirect
-        const jd       = sessionStorage.getItem('cl_jd') ?? '';
-        const rawAnal  = sessionStorage.getItem('cl_analysis') ?? '';
+        if (Date.now() >= deadline) break;
+        if (!announced) { setStatus('confirming'); announced = true; }
+        await sleep(ACCESS_POLL_INTERVAL_MS);
+      }
 
-        if (!jd || !rawAnal) {
-          // No stored data — user navigated here directly; send them back
-          router.replace('/dashboard');
-          return;
-        }
+      if (cancelled) return;
 
-        let analysis: object;
-        try { analysis = JSON.parse(rawAnal); }
-        catch { router.replace('/dashboard'); return; }
+      if (!granted) {
+        setStatus('gate');
+        return;
+      }
 
-        // Clear storage so a back-navigation doesn't re-generate
-        sessionStorage.removeItem('cl_jd');
-        sessionStorage.removeItem('cl_analysis');
+      generate(storedJd, analysis);
+    })();
 
-        generate(jd, analysis);
-      })
-      .catch(() => {
-        setErrorMsg('Could not verify your access. Please try again.');
-        setStatus('error');
-      });
+    return () => { cancelled = true; };
   }, [isLoaded, isSignedIn, generate, router]);
+
+  const handleClaim = async () => {
+    const email = claimEmail.trim().toLowerCase();
+    if (!email) return;
+    setClaimLoading(true);
+    setClaimError(null);
+    try {
+      const res  = await fetch('/api/whop/claim', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ buyerEmail: email }),
+      });
+      const data = await res.json();
+      if (data.ok && analysisRef.current) {
+        generate(jdRef.current, analysisRef.current);
+        return;
+      }
+      setClaimError(data.error ?? 'No purchase found for that email.');
+    } catch {
+      setClaimError('Network error. Please try again.');
+    } finally {
+      setClaimLoading(false);
+    }
+  };
 
   const copyAll = () => {
     navigator.clipboard.writeText(fullText).then(() => {
@@ -166,20 +283,75 @@ export default function CoverLetterPage() {
     );
   }
 
-  if (status === 'gate') {
+  if (status === 'confirming') {
     return (
       <div className="min-h-screen bg-background text-foreground flex items-center justify-center px-6">
         <div className="text-center max-w-sm">
+          <Loader2 className="w-14 h-14 text-gold animate-spin mx-auto mb-5" />
+          <h2 className="font-display uppercase text-2xl tracking-tight mb-2">Confirming your purchase</h2>
+          <p className="font-mono text-[11px] uppercase tracking-[0.15em] text-muted-foreground">
+            This takes a few seconds
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (status === 'gate') {
+    return (
+      <div className="min-h-screen bg-background text-foreground flex items-center justify-center px-6">
+        <div className="text-center max-w-sm w-full">
           <div className="w-16 h-16 rounded-full bg-gold/10 border border-gold/25 flex items-center justify-center mx-auto mb-6">
             <Lock className="w-8 h-8 text-gold" />
           </div>
-          <h2 className="font-display uppercase text-3xl tracking-tight mb-3">Access Required</h2>
-          <p className="text-foreground/60 mb-8 text-sm leading-relaxed">
-            Unlimited parses + full cover letters unlock for <span className="text-gold font-semibold">$4.99</span> — one-time, no subscription.
-          </p>
+
+          {justPaid ? (
+            <>
+              <h2 className="font-display uppercase text-3xl tracking-tight mb-3">Almost there</h2>
+              <p className="text-foreground/60 mb-6 text-sm leading-relaxed">
+                We haven&apos;t received confirmation from Whop yet. If you paid with a different
+                email, enter it below — it needs to be verified on this account.
+              </p>
+
+              <input
+                type="email"
+                value={claimEmail}
+                onChange={(e) => { setClaimEmail(e.target.value); setClaimError(null); }}
+                onKeyDown={(e) => { if (e.key === 'Enter') handleClaim(); }}
+                placeholder="Email used at checkout"
+                autoComplete="email"
+                className="w-full h-11 px-4 mb-3 bg-card border border-border text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-gold transition-colors"
+              />
+
+              {claimError && (
+                <p className="text-red-400 text-xs mb-3 leading-relaxed text-left">{claimError}</p>
+              )}
+
+              <button
+                onClick={handleClaim}
+                disabled={claimLoading || !claimEmail.trim()}
+                className="w-full h-11 mb-3 bg-gold text-background font-mono text-xs uppercase tracking-[0.15em] hover:bg-gold/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {claimLoading ? 'Checking…' : 'Unlock my purchase'}
+              </button>
+
+              <p className="text-muted-foreground text-xs mb-5 leading-relaxed">
+                Still nothing? Email <span className="text-foreground/80">atomeo.019@gmail.com</span> with
+                your Whop receipt and we&apos;ll sort it out.
+              </p>
+            </>
+          ) : (
+            <>
+              <h2 className="font-display uppercase text-3xl tracking-tight mb-3">Access Required</h2>
+              <p className="text-foreground/60 mb-8 text-sm leading-relaxed">
+                Unlimited parses + full cover letters unlock for <span className="text-gold font-semibold">$4.99</span> — one-time, no subscription.
+              </p>
+            </>
+          )}
+
           <button
             onClick={() => router.push('/dashboard')}
-            className="h-11 px-6 bg-gold text-background font-mono text-xs uppercase tracking-[0.15em] hover:bg-gold/90 transition-colors"
+            className="h-11 px-6 border border-border font-mono text-xs uppercase tracking-[0.15em] text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors"
           >
             Back to Dashboard
           </button>
@@ -197,12 +369,22 @@ export default function CoverLetterPage() {
           </div>
           <h2 className="font-display uppercase text-3xl tracking-tight mb-3">Generation Failed</h2>
           <p className="text-foreground/60 mb-8 text-sm">{errorMsg}</p>
-          <button
-            onClick={() => router.back()}
-            className="h-11 px-6 bg-gold text-background font-mono text-xs uppercase tracking-[0.15em] hover:bg-gold/90 transition-colors"
-          >
-            Go Back
-          </button>
+          <div className="flex items-center justify-center gap-3">
+            {canRetry && (
+              <button
+                onClick={retry}
+                className="h-11 px-6 bg-gold text-background font-mono text-xs uppercase tracking-[0.15em] hover:bg-gold/90 transition-colors"
+              >
+                Try Again
+              </button>
+            )}
+            <button
+              onClick={() => router.push('/dashboard')}
+              className="h-11 px-6 border border-border font-mono text-xs uppercase tracking-[0.15em] text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors"
+            >
+              Back to Dashboard
+            </button>
+          </div>
         </div>
       </div>
     );

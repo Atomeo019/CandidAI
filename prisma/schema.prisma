@@ -10,9 +10,15 @@ datasource db {
 
 model User {
   id            String     @id // = Clerk user_id
+  // NOT @unique — deliberately, for now. Adding the constraint requires checking
+  // production for existing duplicate emails first, because the migration fails
+  // outright if any exist. Until then the Whop webhook compensates: it matches
+  // case-insensitively and pins the result with orderBy createdAt asc, so a tie
+  // resolves deterministically to the oldest account instead of an arbitrary row.
+  // All write sites lowercase before storing. See CANDIDAI_FIX_REPORT.md 2.2.
   email         String
   parseCount    Int        @default(0)
-  parseLimit    Int        @default(5)
+  parseLimit    Int        @default(3) // keep in sync with FREE_PARSE_LIMIT in lib/constants.ts
   hasFullAccess Boolean    @default(false) // true after $4.99 purchase — unlocks parses + cover letter
   createdAt     DateTime   @default(now())
   analyses      Analysis[]
@@ -44,7 +50,12 @@ model Purchase {
   user            User?    @relation(fields: [userId], references: [id])
   buyerEmail      String?  // email from Whop webhook — used to claim pending purchases
   type            String   // 'full_access' | 'parse_credits' | 'cover_letter'
-  lsOrderId       String   @unique // Whop membership ID — prevents double-credit on retry
+  // Whop PAYMENT id ("pay_..."), taken from `data.id` on payment.succeeded.
+  // The column name is a leftover from the Lemon Squeezy integration this
+  // replaced — renaming it would need a migration for no functional gain.
+  // It is also the key payment.canceled uses to find the purchase to revoke,
+  // which is why refunds work even when the buyer has since changed their email.
+  lsOrderId       String   @unique // prevents double-credit on Whop retries
   creditsAdded    Int      @default(0)
   amountCents     Int
   createdAt       DateTime @default(now())

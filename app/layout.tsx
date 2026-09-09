@@ -22,7 +22,11 @@ const dmMono = DM_Mono({
 
 export const metadata: Metadata = {
   metadataBase: new URL(
-    process.env.NEXT_PUBLIC_SITE_URL ?? 'https://candidai.app'
+    // NEXT_PUBLIC_SITE_URL is the canonical name; NEXT_PUBLIC_BASE_URL is
+    // accepted because that is what .env.local has always defined. Reading only
+    // the first meant this silently fell through to the hardcoded default on
+    // every preview deployment.
+    process.env.NEXT_PUBLIC_SITE_URL ?? process.env.NEXT_PUBLIC_BASE_URL ?? 'https://candidai.app'
   ),
   title: 'CandidAI — Brutally Honest Resume Analysis',
   description:

@@ -47,7 +47,7 @@ export default function PrivacyPage() {
       </LegalSection>
 
       <LegalSection title="Data retention">
-        <p>Your account and analysis scores are retained as long as your account exists. You can request deletion at any time by emailing <a href="mailto:atomeo.019@gmail.com" className={legalLink}>atomeo.019@gmail.com</a>. We will delete your data within 30 days.</p>
+        <p>Your account and analysis scores are retained as long as your account exists. You can erase your stored analyses yourself at any time using <strong className="text-foreground">Delete my data</strong> on your dashboard — that takes effect immediately. You can also email <a href="mailto:atomeo.019@gmail.com" className={legalLink}>atomeo.019@gmail.com</a> and we will delete your data within 30 days.</p>
       </LegalSection>
 
       <LegalSection title="Your rights">

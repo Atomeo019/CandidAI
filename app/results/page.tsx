@@ -362,8 +362,16 @@ export default function ResultsPage() {
       return;
     }
 
-    // Not paid — redirect to Gumroad, return to cover-letter after payment
+    // Not paid — send them to Whop checkout, returning to /cover-letter after
+    // payment. `base` used to default to '' with no guard, so an unset env var
+    // navigated to this same page with a query string: the button looked dead
+    // and the sale was silently lost.
     const base = process.env.NEXT_PUBLIC_WHOP_CHECKOUT_URL ?? '';
+    if (!base) {
+      setApplyError('Checkout is temporarily unavailable. Please email atomeo.019@gmail.com and we will sort you out.');
+      console.error('NEXT_PUBLIC_WHOP_CHECKOUT_URL is not set — checkout cannot open.');
+      return;
+    }
     const redirect = encodeURIComponent(window.location.origin + '/cover-letter?unlocked=true');
     window.location.href = `${base}?redirect=${redirect}`;
   }

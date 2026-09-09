@@ -2,40 +2,52 @@ import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@clerk/nextjs/server'
 import { prisma } from '@/lib/db'
 
-export async function POST(req: NextRequest) {
+export const runtime = 'nodejs'
+
+// GET /api/analyses — the signed-in user's own analysis history.
+//
+// The POST that used to live here took whatever `analysis` JSON the browser
+// sent and wrote the scores straight to the database, so anyone could store
+// themselves a perfect result. Persistence now happens inside /api/analyze from
+// the normalized server-side result, and this route is read-only.
+//
+// Scoped to the caller's userId — there is deliberately no way to request
+// another user's rows.
+
+const DEFAULT_LIMIT = 20
+const MAX_LIMIT     = 50
+
+export async function GET(req: NextRequest) {
   const { userId } = await auth()
   if (!userId) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 })
   }
 
-  let analysis: Record<string, unknown>
-  try {
-    const body = await req.json()
-    analysis = body.analysis ?? {}
-  } catch {
-    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
-  }
+  const requested = Number(req.nextUrl.searchParams.get('limit'))
+  const take = Number.isFinite(requested) && requested > 0
+    ? Math.min(Math.floor(requested), MAX_LIMIT)
+    : DEFAULT_LIMIT
 
   try {
-    const saved = await prisma.analysis.create({
-      data: {
-        userId,
-        detectedRole:     (analysis.detected_role     as string  | null) ?? null,
-        tier:             (analysis.tier               as string  | null) ?? null,
-        contentScore:     (analysis.content_score      as number  | null) ?? null,
-        atsScore:         (analysis.ats_score          as number  | null) ?? null,
-        roastHeadline:    (analysis.roast_headline     as string  | null) ?? null,
-        roastBody:        (analysis.roast_body         as string  | null) ?? null,
-        dimensionScores:  (analysis.dimension_scores   ?? null) as any,
-        hiringPrediction: (analysis.hiring_prediction  ?? null) as any,
-        redFlags:         (analysis.red_flags          ?? null) as any,
-        strengths:        (analysis.strengths          ?? null) as any,
-        topPriority:      (analysis.top_priority       as string  | null) ?? null,
+    const rows = await prisma.analysis.findMany({
+      where:   { userId },
+      orderBy: { createdAt: 'desc' },
+      take,
+      select: {
+        id:            true,
+        createdAt:     true,
+        detectedRole:  true,
+        tier:          true,
+        contentScore:  true,
+        atsScore:      true,
+        roastHeadline: true,
+        topPriority:   true,
       },
     })
-    return NextResponse.json({ id: saved.id })
+
+    return NextResponse.json({ ok: true, analyses: rows })
   } catch (err: any) {
     console.error('[analyses] DB error:', err?.message)
-    return NextResponse.json({ error: 'Failed to save analysis' }, { status: 500 })
+    return NextResponse.json({ ok: false, error: 'Could not load your history.' }, { status: 500 })
   }
 }

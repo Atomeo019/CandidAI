@@ -1,11 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { prisma } from '@/lib/db';
+import { rateLimit } from '@/lib/rate-limit';
 
-export const runtime     = 'nodejs';
-export const maxDuration = 25;          // full letter needs more headroom than the preview
+export const runtime = 'nodejs';
 
-const GROQ_TIMEOUT = 18000;
+// Vercel rejects a build whose maxDuration exceeds the plan ceiling, and Hobby
+// has historically been 10s. 25 was set optimistically and never verified.
+// Once you have confirmed your plan's limit you can raise both of these
+// together — GROQ_TIMEOUT should stay ~2s under maxDuration so the handler can
+// still serialise a response after a slow generation.
+export const maxDuration = 10;
+
+const GROQ_TIMEOUT = 8000;
+
+// Full access is unlimited by design, but "unlimited" should not mean a script
+// can generate letters faster than a person could read them. ~700 output
+// tokens a call makes this the most expensive route in the app.
+const FULL_RATE_LIMIT  = 12;
+const FULL_RATE_WINDOW = 60 * 60_000;   // per hour
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -192,6 +205,18 @@ export async function POST(req: NextRequest) {
         { status: 401 }
       );
     }
+    const limit = rateLimit(`apply-full:${userId}`, FULL_RATE_LIMIT, FULL_RATE_WINDOW);
+    if (!limit.ok) {
+      return NextResponse.json<ApplyFullError>(
+        {
+          ok: false,
+          error: `You have generated a lot of letters in the last hour. Try again in ${Math.ceil(limit.retryAfter / 60)} minutes.`,
+          code: 'RATE_LIMITED',
+        },
+        { status: 429, headers: { 'Retry-After': String(limit.retryAfter) } }
+      );
+    }
+
     const dbUser = await prisma.user.findUnique({ where: { id: userId } });
     const hasFullAccess = dbUser ? Boolean((dbUser as Record<string, unknown>).hasFullAccess) : false;
     if (!hasFullAccess) {

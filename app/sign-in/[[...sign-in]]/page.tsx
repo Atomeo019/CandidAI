@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { SignIn } from '@clerk/nextjs';
 import { Flame } from 'lucide-react';
+import { FREE_PARSE_COPY } from '@/lib/constants';
 
 export default function SignInPage() {
   return (
@@ -13,7 +14,7 @@ export default function SignInPage() {
       </Link>
       <SignIn />
       <p className="mt-8 font-mono text-[11px] uppercase tracking-[0.15em] text-muted-foreground">
-        3 free analyses &middot; No card required
+        {FREE_PARSE_COPY} &middot; No card required
       </p>
     </div>
   );

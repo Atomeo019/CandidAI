@@ -1,10 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
+import { prisma } from '@/lib/db';
+import { rateLimit } from '@/lib/rate-limit';
 
 export const runtime     = 'nodejs';
 export const maxDuration = 10;
 
 const GROQ_TIMEOUT = 7500;
+
+// This route used to check only that the caller was signed in — no quota, no
+// paid gate. A free account could loop it and burn Groq tokens indefinitely.
+// Each preview now spends a real credit for non-paying users (see the POST
+// handler); this per-minute ceiling is the secondary backstop against bursts.
+const PREVIEW_RATE_LIMIT  = 6;
+const PREVIEW_RATE_WINDOW = 60_000;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -140,6 +149,18 @@ export async function POST(req: NextRequest) {
     )
   }
 
+  const limit = rateLimit(`apply-preview:${userId}`, PREVIEW_RATE_LIMIT, PREVIEW_RATE_WINDOW);
+  if (!limit.ok) {
+    return NextResponse.json<ApplyPreviewError>(
+      { ok: false, error: `Too many previews in a short window. Try again in ${limit.retryAfter}s.`, code: 'RATE_LIMITED' },
+      { status: 429, headers: { 'Retry-After': String(limit.retryAfter) } }
+    );
+  }
+
+  // A credit is spent below, after validation. If the preview then fails to
+  // generate, it is handed back in the finally block.
+  let refundCredit = false;
+
   try {
     let body: Partial<ApplyPreviewRequest>;
     try {
@@ -165,6 +186,33 @@ export async function POST(req: NextRequest) {
         { ok: false, error: 'Missing analysis data.', code: 'NO_ANALYSIS' },
         { status: 422 }
       );
+    }
+
+    // -- Entitlement + metering ----------------------------------------------
+    // Full access is unlimited. Everyone else SPENDS a credit here, via the same
+    // atomic conditional UPDATE /api/analyze uses.
+    //
+    // The previous check read `parseCount < parseLimit` and never decremented,
+    // so a free user who deliberately left one credit unused could call this
+    // route indefinitely — a gate shaped like a quota that never spent anything.
+    // Placed after validation so a malformed request cannot cost a credit.
+    const dbUser = await prisma.user.findUnique({ where: { id: userId } });
+    const fullAccess = Boolean((dbUser as Record<string, unknown> | null)?.hasFullAccess);
+
+    if (!fullAccess) {
+      const reserved = await prisma.$executeRaw`
+        UPDATE "User"
+           SET "parseCount" = "parseCount" + 1
+         WHERE "id" = ${userId}
+           AND "parseCount" < "parseLimit"
+      `;
+      if (reserved === 0) {
+        return NextResponse.json<ApplyPreviewError>(
+          { ok: false, error: 'You have used all your free credits. Upgrade for unlimited previews and full cover letters.', code: 'FORBIDDEN' },
+          { status: 403 }
+        );
+      }
+      refundCredit = true;
     }
 
     const truncatedJd = jd.slice(0, 3000); // cap to control token usage
@@ -198,6 +246,8 @@ Now write the 3 sentences. Follow your rules exactly.
       );
     }
 
+    // Preview delivered — the credit was legitimately spent.
+    refundCredit = false;
     return NextResponse.json<ApplyPreviewSuccess>({ ok: true, preview });
 
   } catch (e: any) {
@@ -206,5 +256,21 @@ Now write the 3 sentences. Follow your rules exactly.
       { ok: false, error: 'Unexpected error. Please try again.', code: 'SERVER_ERROR' },
       { status: 500 }
     );
+
+  } finally {
+    // Groq outage, timeout, unhandled throw — none of those are the user's
+    // fault, so none of them should cost a credit.
+    if (refundCredit) {
+      try {
+        await prisma.$executeRaw`
+          UPDATE "User"
+             SET "parseCount" = GREATEST("parseCount" - 1, 0)
+           WHERE "id" = ${userId}
+        `;
+        console.log(`apply-preview: refunded credit to ${userId} — preview not delivered`);
+      } catch (err: any) {
+        console.error('apply-preview: credit refund failed:', err?.message);
+      }
+    }
   }
 }

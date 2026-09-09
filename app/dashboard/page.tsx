@@ -15,12 +15,35 @@ import {
   X,
   Loader,
   Flame,
-  Trophy
+  Trophy,
+  History,
+  Trash2
 } from 'lucide-react';
 import { Button } from '@/components/brand/Button';
+import { FREE_PARSE_COPY } from '@/lib/constants';
 
-const MAX_FILE_SIZE_MB = 10;
+// Must match the server-side guard in app/api/analyze/route.ts. It was 10
+// here and 5 there, so a 7 MB PDF passed local validation and then came back
+// as a 413 telling the user about a limit the upload screen never mentioned.
+const MAX_FILE_SIZE_MB = 5;
 const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
+
+type HistoryRow = {
+  id:            string;
+  createdAt:     string;
+  detectedRole:  string | null;
+  tier:          string | null;
+  contentScore:  number | null;
+  atsScore:      number | null;
+  roastHeadline: string | null;
+  topPriority:   string | null;
+};
+
+function formatDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+}
 
 function validateFile(file: File): string | null {
   if (file.type !== 'application/pdf') return 'Only PDF files are accepted.';
@@ -44,8 +67,11 @@ export default function DashboardPage() {
   const { signOut } = useClerk();
   const { isSignedIn, userId } = useAuth();
 
-  // Parse gate state
-  const [localParseCount, setLocalParseCount] = useState(0);
+  // Parse gate state.
+  // The old `localParseCount` mirror in localStorage is gone: the count is now
+  // owned entirely by the server, incremented inside /api/analyze in the same
+  // transaction that checks it. A number the browser keeps is a number the
+  // browser can edit.
   const [serverRemaining, setServerRemaining] = useState<number | null>(null);
   const [hasFullAccess, setHasFullAccess] = useState(false);
   const [showSignInGate, setShowSignInGate] = useState(false);
@@ -55,6 +81,12 @@ export default function DashboardPage() {
   const [claimLoading, setClaimLoading] = useState(false);
   const [claimError, setClaimError] = useState<string | null>(null);
   const [claimSuccess, setClaimSuccess] = useState(false);
+
+  // Analysis history. The privacy policy tells users their scores are kept "so
+  // you can review past results" — until this existed there was no way to.
+  const [history, setHistory]           = useState<HistoryRow[] | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [deletingData, setDeletingData] = useState(false);
 
   // Detect return from Whop checkout — show claim banner if access wasn't auto-applied
   useEffect(() => {
@@ -67,9 +99,6 @@ export default function DashboardPage() {
 
   // Load parse counts on mount and auth change
   useEffect(() => {
-    const local = parseInt(localStorage.getItem('candidai_parse_count') ?? '0', 10);
-    setLocalParseCount(local);
-
     if (isSignedIn) {
       // Close the sign-in gate modal now that the user is authenticated
       setShowSignInGate(false);
@@ -83,6 +112,14 @@ export default function DashboardPage() {
           if (fa) setShowClaimBanner(false);
         })
         .catch(() => setServerRemaining(null));
+
+      fetch('/api/analyses')
+        .then(r => r.json())
+        .then(d => {
+          if (d.ok) setHistory(d.analyses ?? []);
+          else setHistoryError('Could not load your history.');
+        })
+        .catch(() => setHistoryError('Could not load your history.'));
     }
   }, [isSignedIn]);
 
@@ -234,19 +271,11 @@ export default function DashboardPage() {
         sessionStorage.setItem('analysis_result', JSON.stringify(data.analysis));
         sessionStorage.setItem('analysis_truncated', data.truncated ? 'true' : 'false');
 
-        // Increment parse counts
-        const newLocal = localParseCount + 1;
-        localStorage.setItem('candidai_parse_count', newLocal.toString());
-        setLocalParseCount(newLocal);
-
-        if (isSignedIn) {
-          fetch('/api/user/increment', { method: 'POST' }).catch(() => {});
-          fetch('/api/analyses', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ analysis: data.analysis }),
-          }).catch(() => {});
-        }
+        // The credit was already consumed server-side by /api/analyze, and the
+        // analysis was persisted there from the normalized result. Nothing to
+        // report back — just keep the local remaining count honest so the
+        // paywall modal appears at the right moment without a refetch.
+        setServerRemaining(prev => (prev === null ? prev : Math.max(0, prev - 1)));
 
         router.push('/results');
         return;
@@ -296,6 +325,40 @@ export default function DashboardPage() {
       setClaimError('Network error. Please try again.');
     } finally {
       setClaimLoading(false);
+    }
+  };
+
+  // Both buy buttons used to build `${base}?redirect=...` with base defaulting
+  // to ''. With the env var unset in production that navigated to the CURRENT
+  // page with a query string — the button appeared to do nothing, no sale, no
+  // error, nothing in the logs.
+  const goToCheckout = (returnPath: string) => {
+    const base = process.env.NEXT_PUBLIC_WHOP_CHECKOUT_URL ?? '';
+    if (!base) {
+      setFileError('Checkout is temporarily unavailable. Please email atomeo.019@gmail.com and we will sort you out.');
+      console.error('NEXT_PUBLIC_WHOP_CHECKOUT_URL is not set — checkout cannot open.');
+      return;
+    }
+    const redirect = encodeURIComponent(window.location.origin + returnPath);
+    window.location.href = `${base}?redirect=${redirect}`;
+  };
+
+  const handleDeleteData = async () => {
+    const ok = window.confirm(
+      'Delete your stored analysis history? Your scores and roasts are erased permanently. Your account and any purchase stay intact.'
+    );
+    if (!ok) return;
+    setDeletingData(true);
+    setHistoryError(null);
+    try {
+      const res  = await fetch('/api/user/data', { method: 'DELETE' });
+      const data = await res.json();
+      if (data.ok) setHistory([]);
+      else setHistoryError(data.error ?? 'Could not delete your data.');
+    } catch {
+      setHistoryError('Network error. Please try again.');
+    } finally {
+      setDeletingData(false);
     }
   };
 
@@ -409,7 +472,7 @@ export default function DashboardPage() {
                   Drop your resume and find out the truth
                 </h3>
                 <p className="font-mono text-[11px] uppercase tracking-[0.15em] text-muted-foreground">
-                  PDF only &middot; Max 10MB &middot; IT industry
+                  PDF only &middot; Max 5MB &middot; IT industry
                 </p>
               </label>
             ) : (
@@ -502,6 +565,69 @@ export default function DashboardPage() {
               </p>
             </div>
           </div>
+
+          {/* ── Past analyses ──────────────────────────────────────────────
+               The privacy policy says scores are stored so users can review
+               them. This is where they do that — and where they can erase
+               them without emailing support. */}
+          {isSignedIn && (
+            <section className="mt-10 md:mt-14">
+              <div className="flex items-center justify-between gap-4 mb-4 pb-3 border-b border-border">
+                <div className="flex items-center gap-2.5">
+                  <History className="w-4 h-4 text-gold" />
+                  <h2 className="font-display uppercase text-2xl tracking-tight">Past analyses</h2>
+                </div>
+                {history !== null && history.length > 0 && (
+                  <button
+                    onClick={handleDeleteData}
+                    disabled={deletingData}
+                    className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.15em] text-muted-foreground hover:text-red-400 transition-colors disabled:opacity-50"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    {deletingData ? 'Deleting…' : 'Delete my data'}
+                  </button>
+                )}
+              </div>
+
+              {historyError && (
+                <p className="text-sm text-red-400">{historyError}</p>
+              )}
+
+              {!historyError && history === null && (
+                <p className="font-mono text-[11px] uppercase tracking-[0.15em] text-muted-foreground">Loading…</p>
+              )}
+
+              {!historyError && history !== null && history.length === 0 && (
+                <p className="text-foreground/60 text-sm">
+                  Nothing here yet. Your analyses will be listed here after your first roast.
+                </p>
+              )}
+
+              {!historyError && history !== null && history.length > 0 && (
+                <ul className="space-y-px bg-border border border-border">
+                  {history.map((row) => (
+                    <li key={row.id} className="bg-background px-5 py-4 flex flex-wrap items-baseline gap-x-4 gap-y-1.5">
+                      <span className="font-mono text-[11px] uppercase tracking-[0.15em] text-muted-foreground w-28 flex-shrink-0">
+                        {formatDate(row.createdAt)}
+                      </span>
+                      {row.tier && (
+                        <span className="font-display text-xl leading-none text-gold w-8 flex-shrink-0">{row.tier}</span>
+                      )}
+                      <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-foreground/70 w-24 flex-shrink-0">
+                        {row.detectedRole ?? '—'}
+                      </span>
+                      <span className="font-mono text-[11px] text-muted-foreground tabular-nums w-24 flex-shrink-0">
+                        {row.contentScore ?? '—'} / ATS {row.atsScore ?? '—'}
+                      </span>
+                      <span className="text-foreground/60 text-sm flex-1 min-w-[200px]">
+                        {row.roastHeadline ?? row.topPriority ?? ''}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          )}
         </div>
       </main>
 
@@ -547,7 +673,7 @@ export default function DashboardPage() {
             <Flame className="w-8 h-8 text-gold mx-auto mb-4" />
             <h2 className="font-display uppercase text-2xl tracking-tight mb-2">Sign in to continue</h2>
             <p className="text-foreground/60 text-sm mb-6">
-              You&apos;ve used your free parse. Sign in with Google to get 4 more free parses.
+              {FREE_PARSE_COPY}, no card required. Sign in to analyse your resume.
             </p>
             <SignIn routing="hash" />
             <button
@@ -571,11 +697,7 @@ export default function DashboardPage() {
             </p>
             <Button
               className="w-full mb-3"
-              onClick={() => {
-                const base = process.env.NEXT_PUBLIC_WHOP_CHECKOUT_URL ?? '';
-                const redirect = encodeURIComponent(window.location.origin + '/dashboard?unlocked=true');
-                window.location.href = `${base}?redirect=${redirect}`;
-              }}
+              onClick={() => goToCheckout('/dashboard?unlocked=true')}
             >
               Unlock everything — $4.99
             </Button>
