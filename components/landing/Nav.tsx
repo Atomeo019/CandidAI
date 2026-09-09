@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { Show, SignInButton, UserButton } from '@clerk/nextjs';
+import { SignedIn, SignedOut, SignInButton, UserButton } from '@clerk/nextjs';
 import { Flame, ArrowRight } from 'lucide-react';
 import { Button } from '@/components/brand/Button';
 import { cn } from '@/lib/utils';
@@ -62,16 +62,16 @@ export function Nav() {
         </nav>
 
         <div className="hidden md:flex items-center gap-4">
-          <Show when="signed-in">
+          <SignedIn>
             <UserButton />
-          </Show>
-          <Show when="signed-out">
+          </SignedIn>
+          <SignedOut>
             <SignInButton mode="modal">
               <button className="font-mono text-[11px] uppercase tracking-[0.2em] text-foreground/60 hover:text-foreground transition-colors">
                 Sign In
               </button>
             </SignInButton>
-          </Show>
+          </SignedOut>
           <Button asChild size="sm">
             <Link href="/dashboard">
               Get Roasted
@@ -125,18 +125,18 @@ export function Nav() {
             ))}
           </nav>
           <div className="mt-auto flex flex-col gap-4">
-            <Show when="signed-out">
+            <SignedOut>
               <SignInButton mode="modal">
                 <button className="font-mono text-xs uppercase tracking-[0.2em] text-foreground/60 hover:text-foreground transition-colors py-3">
                   Sign In
                 </button>
               </SignInButton>
-            </Show>
-            <Show when="signed-in">
+            </SignedOut>
+            <SignedIn>
               <div className="flex justify-center py-2">
                 <UserButton />
               </div>
-            </Show>
+            </SignedIn>
             <Button asChild size="lg" className="w-full">
               <Link href="/dashboard" onClick={() => setOpen(false)}>
                 <Flame className="w-4 h-4" />

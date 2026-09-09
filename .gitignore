@@ -42,3 +42,5 @@ next-env.d.ts
 
 # local audit reports - not for the public repo
 CANDIDAI_FIX_REPORT*.md
+.vercel
+.env*

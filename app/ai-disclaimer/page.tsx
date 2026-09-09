@@ -1,5 +1,6 @@
 import { AlertTriangle } from 'lucide-react';
 import { LegalShell, LegalSection, LegalCallout, legalLink, legalCode } from '@/components/brand/LegalShell';
+import { GROQ_TEXT_MODEL } from '@/lib/constants';
 
 export const metadata = {
   title: 'AI Disclaimer — CandidAI',
@@ -21,7 +22,7 @@ export default function AIDisclaimerPage() {
       </div>
 
       <LegalSection title="How the AI works">
-        <p>CandidAI uses Groq&apos;s inference API running Meta&apos;s <code className={legalCode}>llama-3.3-70b-versatile</code> model. Your resume text and a structured prompt are sent to the model, which returns scores, tier classification, and written feedback. The model has been trained on a large corpus of text data with a knowledge cutoff date — it does not have real-time knowledge of job markets, specific company hiring practices, or current industry standards.</p>
+        <p>CandidAI uses Groq&apos;s inference API, currently running the <code className={legalCode}>{GROQ_TEXT_MODEL}</code> model, with automatic fallback to smaller models if it is unavailable. Your resume text and a structured prompt are sent to the model, which returns scores, tier classification, and written feedback. The model has been trained on a large corpus of text data with a knowledge cutoff date — it does not have real-time knowledge of job markets, specific company hiring practices, or current industry standards.</p>
       </LegalSection>
 
       <LegalSection title="What the AI can and cannot do">

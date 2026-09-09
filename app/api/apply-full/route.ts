@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { prisma } from '@/lib/db';
 import { rateLimit } from '@/lib/rate-limit';
+import { GROQ_TEXT_MODEL, GROQ_TEXT_MODEL_PARAMS } from '@/lib/constants';
 
 export const runtime = 'nodejs';
 
@@ -151,9 +152,10 @@ async function callGroq(userMessage: string): Promise<string> {
         'Content-Type':  'application/json',
       },
       body: JSON.stringify({
-        model:       'llama-3.3-70b-versatile',
+        model:       GROQ_TEXT_MODEL,
+        ...GROQ_TEXT_MODEL_PARAMS,
         temperature: 0.4,    // enough variance for natural phrasing, not enough to hallucinate
-        max_tokens:  700,    // 3 full paragraphs need ~550-650 tokens; 700 gives headroom
+        max_tokens:  900,    // 3 full paragraphs need ~550-650 tokens; 700 gives headroom
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
           { role: 'user',   content: userMessage    },

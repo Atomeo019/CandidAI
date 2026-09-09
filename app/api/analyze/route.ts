@@ -3,7 +3,7 @@ import { auth, currentUser } from '@clerk/nextjs/server';
 import { prisma } from '@/lib/db';
 import type { ExtractionResponse, AnalysisResponse, ErrorResponse } from '@/lib/types';
 import { normalizeAnalysisResult } from '@/lib/normalize';
-import { FREE_PARSE_LIMIT } from '@/lib/constants';
+import { FREE_PARSE_LIMIT, GROQ_TEXT_MODEL, GROQ_TEXT_MODEL_PARAMS } from '@/lib/constants';
 import { rateLimit } from '@/lib/rate-limit';
 
 // ── Feature flag ──────────────────────────────────────────────────────────────
@@ -23,11 +23,9 @@ const PREVIEW_CHARS = 500;
 // maxDuration (check your Vercel plan's ceiling first — the build fails if you
 // exceed it), raise this with it; the per-stage reserves below are proportions
 // of the whole and need no edit.
-const MAX_DURATION_S  = 10;
 const TOTAL_BUDGET_MS = 9000;
 
 // Time each later stage needs reserved for it while an earlier stage runs.
-const RESERVE_FOR_AI_MS      = 5200; // extraction must leave this for Groq stages 1-3
 const RESERVE_FOR_ROAST_MS   = 2700; // Groq stage 1 must leave this for stages 2 and 3
 const GROQ_STAGE1_MAX_MS     = 5500;
 const GROQ_ROAST_MAX_MS      = 2500;
@@ -36,6 +34,15 @@ const GROQ_ROAST_FLOOR_MS    =  800;
 const EXTRACT_PDFJS_MAX_MS   = 3000;
 const EXTRACT_PDFPARSE_MAX_MS = 2000;
 const EXTRACT_FLOOR_MS       =  500;
+
+// Extraction gates reserve only enough for a MINIMUM viable AI call, not a full
+// one. Text extraction is a precondition: with no text there is nothing to
+// analyse and the request fails outright, whereas a tight AI budget can still
+// succeed. Reserving the full RESERVE_FOR_AI_MS here meant that on a slow cold
+// start both real extractors were skipped and only the last-resort regex
+// scraper ran — which returns 0 chars on most PDFs, so the analysis failed
+// having never actually tried to read the file.
+const RESERVE_FOR_MINIMUM_AI_MS = 2000;
 
 // ── Rate limits ───────────────────────────────────────────────────────────────
 // Backstop only — the parse-credit gate below is the real control. This exists
@@ -188,7 +195,11 @@ const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js');
 if (pdfjsLib.GlobalWorkerOptions) pdfjsLib.GlobalWorkerOptions.workerSrc = '';
 
 export const runtime    = 'nodejs';
-export const maxDuration = MAX_DURATION_S;
+// MUST be a literal. Next parses this statically at build time and cannot
+// resolve an identifier -- `export const maxDuration = MAX_DURATION_S` made it
+// log "Unknown identifier" and silently fall back to the platform default.
+// Keep this number and TOTAL_BUDGET_MS below in sync by hand.
+export const maxDuration = 10;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -233,15 +244,29 @@ function extractWithRegex(buffer: Buffer): string {
 // Returns raw parsed JSON — caller passes it through normalizeAnalysisResult.
 // Throws on: missing API key, network failure, non-200, unparseable content.
 
-const GROQ_MODELS: Array<{ model: string; maxTokens: number; resumeLimit: number }> = [
-  { model: 'llama-3.3-70b-versatile', maxTokens: 2800, resumeLimit: 6000 },
-  { model: 'llama-3.1-8b-instant',    maxTokens: 1200, resumeLimit: 2000 },
-  { model: 'gemma2-9b-it',            maxTokens: 1200, resumeLimit: 2000 },
+// Verified against GET https://api.groq.com/openai/v1/models using this
+// project's own key. llama-3.3-70b-versatile, llama-3.1-8b-instant and
+// gemma2-9b-it have ALL been retired by Groq and return 404 model_not_found —
+// which is why every analysis was failing.
+//
+// `extra` carries per-model parameters. The gpt-oss models emit reasoning
+// tokens that count against max_tokens, so they get reasoning_effort 'low' plus
+// more headroom, or the JSON truncates mid-object. qwen does not take that
+// parameter, which is why this is per-model rather than global.
+const GROQ_MODELS: Array<{
+  model: string;
+  maxTokens: number;
+  resumeLimit: number;
+  extra?: Record<string, unknown>;
+}> = [
+  { model: 'openai/gpt-oss-120b', maxTokens: 4000, resumeLimit: 6000, extra: { reasoning_effort: 'low' } },
+  { model: 'openai/gpt-oss-20b',  maxTokens: 3500, resumeLimit: 3000, extra: { reasoning_effort: 'low' } },
+  { model: 'qwen/qwen3.8-27b',    maxTokens: 2800, resumeLimit: 2000 },
 ];
 
 async function callGroqWithModel(
   resumeText: string,
-  cfg: { model: string; maxTokens: number; resumeLimit: number },
+  cfg: { model: string; maxTokens: number; resumeLimit: number; extra?: Record<string, unknown> },
   timeoutMs: number
 ): Promise<unknown> {
   const apiKey = process.env.GROQ_API_KEY;
@@ -258,6 +283,7 @@ async function callGroqWithModel(
         response_format: { type: 'json_object' },
         temperature: 0.3,
         max_tokens: cfg.maxTokens,
+        ...(cfg.extra ?? {}),
         messages: [
           { role: 'system', content: GROQ_SYSTEM_PROMPT },
           { role: 'user',   content: `RESUME TEXT:\n\n${truncated}` },
@@ -291,17 +317,35 @@ async function callGroqWithModel(
 // or model-specific now falls through; only failures that every model in the
 // chain would hit identically bail out early.
 function isRetryableGroqError(message: string): boolean {
-  if (/\b(400|401|403|404)\b/.test(message)) return false; // bad key / bad request — same for every model
-  return true;                                             // timeout, 429, 413, 5xx, network reset
+  // Only credential/permission failures are fatal — identical for every model,
+  // so retrying them is pointless.
+  //
+  // 404 and 400 are deliberately RETRYABLE. A 404 is `model_not_found`, which is
+  // the single most likely reason to need a different model — Groq retires
+  // models regularly. Classifying it as fatal (an earlier mistake here) meant
+  // the chain died on its first entry and the fallbacks were dead code.
+  // A 400 is usually an unsupported parameter for that specific model.
+  if (/\b(401|403)\b/.test(message)) return false;
+  return true;
 }
 
 async function callGroq(resumeText: string, budgetLeft: () => number): Promise<unknown> {
   let lastError: Error = new Error('No Groq models available');
 
-  for (const cfg of GROQ_MODELS) {
+  for (let attempt = 0; attempt < GROQ_MODELS.length; attempt++) {
+    const cfg = GROQ_MODELS[attempt];
+
     // Each attempt is sized by what is actually left of the request budget, so
     // a retry can never push the handler past its deadline.
-    const timeoutMs = Math.min(GROQ_STAGE1_MAX_MS, budgetLeft() - RESERVE_FOR_ROAST_MS);
+    //
+    // Only the FIRST attempt reserves time for the roast stages. Those are
+    // optional polish — Stage 1 already produces a usable headline and body, and
+    // the roast is skipped gracefully when the budget is short. A fallback
+    // attempt is the difference between an analysis and an error, so it gets to
+    // spend that reserve. Without this, a slow primary model burned the budget
+    // and the fallback was skipped for lack of roast time it never needed.
+    const reserve = attempt === 0 ? RESERVE_FOR_ROAST_MS : 400;
+    const timeoutMs = Math.min(GROQ_STAGE1_MAX_MS, budgetLeft() - reserve);
     if (timeoutMs < GROQ_STAGE1_FLOOR_MS) {
       console.warn(`⚠️ Skipping Groq model ${cfg.model} — only ${budgetLeft()}ms of budget left`);
       break;
@@ -457,9 +501,10 @@ async function callGroqRoast(targets: string[], selectedTemplate: string, timeou
         method: 'POST',
         headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: 'llama-3.3-70b-versatile',
+          model: GROQ_TEXT_MODEL,
+          ...GROQ_TEXT_MODEL_PARAMS,
           temperature: 0.3,
-          max_tokens: 100,
+          max_tokens: 180,
           messages: [
             {
               role: 'system',
@@ -532,9 +577,10 @@ async function callGroqRoastBody(targets: string[], timeoutMs: number): Promise<
         method: 'POST',
         headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: 'llama-3.3-70b-versatile',
+          model: GROQ_TEXT_MODEL,
+          ...GROQ_TEXT_MODEL_PARAMS,
           temperature: 0.7,
-          max_tokens: 220,
+          max_tokens: 320,
           messages: [
             {
               role: 'system',
@@ -736,7 +782,7 @@ export async function POST(req: NextRequest) {
     let resumeText: string | null = null;
 
     // 4a. pdfjs-dist page-by-page extraction
-    const pdfjsBudget = Math.min(EXTRACT_PDFJS_MAX_MS, budgetLeft() - RESERVE_FOR_AI_MS);
+    const pdfjsBudget = Math.min(EXTRACT_PDFJS_MAX_MS, budgetLeft() - RESERVE_FOR_MINIMUM_AI_MS);
     if (pdfjsBudget >= EXTRACT_FLOOR_MS) {
       try {
         // new Uint8Array(buffer) copies elements → byteOffset is always 0, safe
@@ -754,7 +800,7 @@ export async function POST(req: NextRequest) {
         for (let i = 1; i <= numPages; i++) {
           // A 40-page PDF can outlast the budget even when each page is fast.
           // Stop and use what we have rather than overrunning the function.
-          if (budgetLeft() < RESERVE_FOR_AI_MS) {
+          if (budgetLeft() < RESERVE_FOR_MINIMUM_AI_MS) {
             console.warn(`⚠️  pdfjs: stopped at page ${i - 1}/${numPages} — budget exhausted`);
             break;
           }
@@ -777,7 +823,7 @@ export async function POST(req: NextRequest) {
     }
 
     // 4b. pdf-parse fallback — pass buffer directly (fixes the byteOffset bug)
-    const pdfParseBudget = Math.min(EXTRACT_PDFPARSE_MAX_MS, budgetLeft() - RESERVE_FOR_AI_MS);
+    const pdfParseBudget = Math.min(EXTRACT_PDFPARSE_MAX_MS, budgetLeft() - RESERVE_FOR_MINIMUM_AI_MS);
     if (!resumeText && pdfParseBudget >= EXTRACT_FLOOR_MS) {
       try {
         const pdfData = await withTimeout(pdfParse(buffer), pdfParseBudget, 'pdf-parse');
